@@ -1,0 +1,51 @@
+{
+  "expo": {
+    "name": "心理守护",
+    "slug": "mental-chat",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#4A90D9"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.mentalchat.patient"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#4A90D9"
+      },
+      "package": "com.mentalchat.patient",
+      "permissions": [
+        "READ_CONTACTS",
+        "RECORD_AUDIO"
+      ],
+      "softwareKeyboardLayoutMode": "pan"
+    },
+    "plugins": [
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "允许 $(PRODUCT_NAME) 使用麦克风进行语音输入",
+          "speechRecognitionPermission": "允许 $(PRODUCT_NAME) 进行语音识别",
+          "androidSpeechServicePackages": ["com.google.android.googlequicksearchbox"]
+        }
+      ]
+    ],
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "8623695b-9eaf-4600-a87b-86efb1413f9d"
+      }
+    },
+    "owner": "lilanlan"
+  }
+}

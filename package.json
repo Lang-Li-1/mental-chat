@@ -1,0 +1,17 @@
+{
+  "name": "depression-intervention-ai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "面向抑郁症干预的 AI 对话系统",
+  "scripts": {
+    "dev:admin": "cd admin-web && pnpm dev",
+    "dev:emergency": "cd emergency-web && pnpm dev",
+    "dev:patient": "cd patient-app && pnpm start",
+    "dev:miniapp": "cd support-miniapp && pnpm dev:weapp",
+    "dev:backend": "cd backend && python manage.py runserver 0.0.0.0:8000",
+    "dev:ai": "cd ai_service && python app.py"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
