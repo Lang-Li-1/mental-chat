@@ -14,6 +14,8 @@ import requests as http_req
 from flask import Flask, Response, jsonify, request, stream_with_context
 from flask_cors import CORS
 
+from transformers import pipeline
+
 app = Flask(__name__)
 CORS(app)
 
@@ -25,17 +27,37 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# AI Models initialization
+# ---------------------------------------------------------------------------
+# Initialize a lightweight text classification model for crisis detection
+try:
+    logger.info("Loading NLP model for crisis detection...")
+    # Using a zero-shot classifier or a specific mental health model
+    # Here we use a standard lightweight zero-shot for demonstration of concept
+    # In a real scenario, you'd load a fine-tuned model like `distilbert-base-uncased` fine-tuned on depression/suicide datasets
+    crisis_classifier = pipeline(
+        "zero-shot-classification",
+        model="joeddav/xlm-roberta-large-xnli" # Multilingual zero-shot
+    )
+    logger.info("NLP model loaded successfully.")
+except Exception as e:
+    logger.error(f"Failed to load NLP model: {e}")
+    crisis_classifier = None
+
+
+# ---------------------------------------------------------------------------
 # API config
 # ---------------------------------------------------------------------------
-API_KEY = os.environ.get(
-    "AI_API_KEY",
-    "cr_30c3809b2fc25397856427f8795eab7831840457861fa91a026551bfbc2d1949",
-)
+API_KEY = os.environ.get("AI_API_KEY")
+if not API_KEY:
+    raise ValueError("AI_API_KEY environment variable is not set")
+
 API_BASE_URL = os.environ.get(
     "AI_BASE_URL",
-    "https://hopexiong.com.cn/claude/v1/messages",
+    "https://api.anthropic.com/v1/messages",
 )
-AI_MODEL = os.environ.get("AI_MODEL", "claude-haiku-4-5-20251001")
+AI_MODEL = os.environ.get("AI_MODEL", "claude-3-haiku-20240307")
+
 
 SYSTEM_PROMPT = (
     "你是一位专业、温暖、有同理心的AI心理健康助手。你的职责是：\n"
@@ -135,26 +157,50 @@ def crisis_check():
         return jsonify({"error": "Missing 'text' field"}), 400
 
     text = data["text"]
+    
+    is_crisis = False
+    risk_level = "none"
     found = _find_keywords(text, CRISIS_KEYWORDS)
-    is_crisis = len(found) > 0
+    
+    # 1. First use the NLP model if available
+    if crisis_classifier:
+        try:
+            candidate_labels = ["suicide intent", "severe depression", "anxiety", "normal conversation"]
+            result = crisis_classifier(text, candidate_labels, multi_label=False)
+            top_label = result['labels'][0]
+            top_score = result['scores'][0]
+            
+            if top_label == "suicide intent" and top_score > 0.6:
+                is_crisis = True
+                risk_level = "critical"
+            elif top_label == "severe depression" and top_score > 0.7:
+                is_crisis = True
+                risk_level = "high"
+            elif top_label == "anxiety" and top_score > 0.8:
+                risk_level = "medium"
+        except Exception as e:
+            logger.error(f"NLP classification failed: {e}")
 
-    if len(found) >= 3:
-        risk_level = "high"
-    elif len(found) == 2:
-        risk_level = "medium"
-    elif len(found) == 1:
-        risk_level = "low"
-    else:
-        risk_level = "none"
+    # 2. Fallback or augment with keyword matching
+    if len(found) > 0:
+        is_crisis = True
+        if risk_level not in ["critical", "high"]:
+            if len(found) >= 3:
+                risk_level = "high"
+            elif len(found) == 2:
+                risk_level = "medium"
+            else:
+                risk_level = "low"
 
     if is_crisis:
-        logger.warning("CRISIS DETECTED | risk=%s | keywords=%s", risk_level, found)
+        logger.warning("CRISIS DETECTED | risk=%s | keywords=%s | text=%s", risk_level, found, text[:50])
 
     return jsonify({
         "is_crisis": is_crisis,
         "keywords_found": found,
         "risk_level": risk_level,
     })
+
 
 
 @app.route("/health", methods=["GET"])
@@ -269,6 +315,38 @@ def tts():
         return jsonify({"error": "TTS generation failed"}), 500
 
 
+@app.route("/speech_emotion", methods=["POST"])
+def speech_emotion():
+    """
+    Mock endpoint for speech emotion recognition (emotion2vec).
+    In a real implementation, this would receive an audio file, process it through 
+    the emotion2vec model, and return the detected emotion (calm, sad, angry, fear).
+    """
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+        
+    # Mocking the emotion detection process
+    # e.g., model = load_model('emotion2vec')
+    # emotion = model.predict(file)
+    logger.info(f"Received audio file for emotion detection: {file.filename}")
+    
+    # Return a mock response for now
+    return jsonify({
+        "emotion": "sad",
+        "confidence": 0.85,
+        "details": {
+            "calm": 0.1,
+            "sad": 0.85,
+            "angry": 0.02,
+            "fear": 0.03
+        }
+    })
+
 if __name__ == "__main__":
     logger.info("Starting AI Service on port 5000 (model=%s) ...", AI_MODEL)
     app.run(host="0.0.0.0", port=5000, debug=True)
+

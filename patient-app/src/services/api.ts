@@ -26,7 +26,16 @@ api.interceptors.request.use(
 
 // Handle 401 — try refresh token first, then logout if that also fails
 let isRefreshing = false;
-let pendingRequests: Array<(token: string) => void> = [];
+let refreshSubscribers: ((token: string) => void)[] = [];
+
+function subscribeTokenRefresh(cb: (token: string) => void) {
+  refreshSubscribers.push(cb);
+}
+
+function onRefreshed(token: string) {
+  refreshSubscribers.forEach((cb) => cb(token));
+  refreshSubscribers = [];
+}
 
 api.interceptors.response.use(
   (response) => response,
@@ -36,7 +45,7 @@ api.interceptors.response.use(
       // If already refreshing, queue this request
       if (isRefreshing) {
         return new Promise((resolve) => {
-          pendingRequests.push((token: string) => {
+          subscribeTokenRefresh((token: string) => {
             originalRequest.headers.Authorization = `Bearer ${token}`;
             resolve(api(originalRequest));
           });
@@ -60,14 +69,13 @@ api.interceptors.response.use(
         }
 
         // Retry queued requests
-        pendingRequests.forEach((cb) => cb(data.access));
-        pendingRequests = [];
+        onRefreshed(data.access);
 
         originalRequest.headers.Authorization = `Bearer ${data.access}`;
         return api(originalRequest);
       } catch {
         // Refresh also failed — force logout
-        pendingRequests = [];
+        refreshSubscribers = [];
         await AsyncStorage.removeItem('access_token');
         await AsyncStorage.removeItem('refresh_token');
         await AsyncStorage.removeItem('user_info');
@@ -81,6 +89,7 @@ api.interceptors.response.use(
     return Promise.reject(error);
   }
 );
+
 
 // ── Auth API ────────────────────────────────────────────────────────────────
 

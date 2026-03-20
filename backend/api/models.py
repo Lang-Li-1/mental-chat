@@ -4,6 +4,8 @@ from django.contrib.auth.models import AbstractUser
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.db import models
 
+# We will dispatch an event on save using a signal
+
 
 class User(AbstractUser):
     """Custom user model with role-based access."""

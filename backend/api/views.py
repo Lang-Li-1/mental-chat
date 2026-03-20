@@ -1,8 +1,11 @@
 import json
 import uuid
 import logging
+import asyncio
 
+import httpx
 import requests as http_requests
+from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.http import StreamingHttpResponse
 from django.contrib.auth import get_user_model
@@ -12,6 +15,9 @@ from rest_framework import generics, permissions, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
+
+from .tasks import check_crisis_alert_task
+
 
 from .models import Article, AssessmentResult, ChatFeedback, ChatMessage, CrisisAlert, EncouragementMessage, MoodEntry, PatientAssignment, RecoveryBadge, RecoveryTask, SupporterLink
 from .permissions import (
@@ -205,6 +211,11 @@ class AssessmentResultListCreateView(generics.ListCreateAPIView):
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
 def send_message(request):
+    """Send a message (sync view using httpx for async IO internally or delegate to task).
+    For full async, this view should be async def, but DRF @api_view doesn't fully support async yet in older versions.
+    We will use async helper for the network call to not block the worker thread entirely if possible,
+    or better, since we are in DRF sync view, we use Celery or httpx.
+    """
     serializer = SendMessageSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
@@ -219,26 +230,8 @@ def send_message(request):
         session_id=session_id,
     )
 
-    # Crisis detection — call Flask /crisis_check
-    crisis_detected = False
-    try:
-        crisis_check_url = settings.AI_SERVICE_URL.rsplit("/", 1)[0] + "/crisis_check"
-        crisis_resp = http_requests.post(
-            crisis_check_url,
-            json={"text": content},
-            timeout=settings.AI_SERVICE_TIMEOUT,
-        )
-        crisis_resp.raise_for_status()
-        crisis_data = crisis_resp.json()
-        if crisis_data.get("is_crisis"):
-            crisis_detected = True
-            CrisisAlert.objects.create(
-                user=request.user,
-                level=crisis_data.get("risk_level", "medium"),
-                description=content,
-            )
-    except Exception:
-        logger.debug("Crisis check failed, continuing with normal chat flow")
+    # Crisis detection — delegate to Celery task
+    check_crisis_alert_task.delay(content, request.user.id)
 
     # Build conversation history from DB for AI context
     history_msgs = ChatMessage.objects.filter(
@@ -252,31 +245,32 @@ def send_message(request):
         for m in history_msgs
     ]
 
-    # Call the Flask AI service
+    # Call the Flask AI service synchronously but with httpx for better connection pooling
+    # Ideally this would be fully async, but DRF views are sync.
     ai_reply_text = ""
     ai_error = None
     try:
-        ai_response = http_requests.post(
-            settings.AI_SERVICE_URL,
-            json={
-                "text": content,
-                "session_id": str(session_id),
-                "history": history,
-            },
-            timeout=settings.AI_SERVICE_TIMEOUT,
-        )
-        ai_response.raise_for_status()
-        ai_data = ai_response.json()
-        ai_reply_text = ai_data.get("reply", ai_data.get("response", ""))
-    except http_requests.ConnectionError:
+        with httpx.Client(timeout=settings.AI_SERVICE_TIMEOUT) as client:
+            ai_response = client.post(
+                settings.AI_SERVICE_URL,
+                json={
+                    "text": content,
+                    "session_id": str(session_id),
+                    "history": history,
+                }
+            )
+            ai_response.raise_for_status()
+            ai_data = ai_response.json()
+            ai_reply_text = ai_data.get("reply", ai_data.get("response", ""))
+    except httpx.ConnectError:
         ai_error = "AI service is currently unavailable."
         ai_reply_text = "I'm sorry, the AI service is temporarily unavailable. Please try again later."
         logger.warning("Failed to connect to AI service at %s", settings.AI_SERVICE_URL)
-    except http_requests.Timeout:
+    except httpx.TimeoutException:
         ai_error = "AI service request timed out."
         ai_reply_text = "I'm sorry, the AI service took too long to respond. Please try again."
         logger.warning("AI service request timed out after %ss", settings.AI_SERVICE_TIMEOUT)
-    except http_requests.RequestException as exc:
+    except httpx.RequestError as exc:
         ai_error = f"AI service error: {str(exc)}"
         ai_reply_text = "I'm sorry, an error occurred while communicating with the AI service."
         logger.exception("AI service request failed")
@@ -299,10 +293,9 @@ def send_message(request):
     }
     if ai_error:
         response_data["ai_error"] = ai_error
-    if crisis_detected:
-        response_data["crisis_detected"] = True
 
     return Response(response_data, status=status.HTTP_201_CREATED)
+
 
 
 @api_view(["GET"])
@@ -374,7 +367,7 @@ def chat_message_feedback(request, message_id):
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
 def send_message_stream(request):
-    """Send a message and stream the AI reply via SSE."""
+    """Send a message and stream the AI reply via SSE using httpx."""
     serializer = SendMessageSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
@@ -387,20 +380,8 @@ def send_message_stream(request):
         is_ai_response=False, session_id=session_id,
     )
 
-    # Crisis detection (fire and forget)
-    try:
-        crisis_url = settings.AI_SERVICE_URL.rsplit("/", 1)[0] + "/crisis_check"
-        crisis_resp = http_requests.post(
-            crisis_url, json={"text": content}, timeout=5,
-        )
-        crisis_data = crisis_resp.json()
-        if crisis_data.get("is_crisis"):
-            CrisisAlert.objects.create(
-                user=request.user, level=crisis_data.get("risk_level", "medium"),
-                description=content,
-            )
-    except Exception:
-        pass
+    # Crisis detection (delegate to celery task)
+    check_crisis_alert_task.delay(content, request.user.id)
 
     # Build history
     history_msgs = ChatMessage.objects.filter(
@@ -414,49 +395,50 @@ def send_message_stream(request):
     # Stream from AI service
     stream_url = settings.AI_SERVICE_URL.rsplit("/", 1)[0] + "/respond_stream"
 
-    def event_stream():
+    async def event_stream():
         full_reply = ""
-        # First, send user_message metadata
-        yield f"data: {json.dumps({'type': 'meta', 'user_message': ChatMessageSerializer(user_msg).data})}\n\n"
+        user_msg_data = await sync_to_async(lambda: ChatMessageSerializer(user_msg).data)()
+        yield f"data: {json.dumps({'type': 'meta', 'user_message': user_msg_data})}\n\n".encode("utf-8")
 
         try:
-            resp = http_requests.post(
-                stream_url,
-                json={"text": content, "history": history},
-                timeout=60,
-                stream=True,
-            )
-            for line in resp.iter_lines():
-                if not line:
-                    continue
-                line_str = line.decode("utf-8")
-                if line_str.startswith("data: "):
-                    payload = line_str[6:]
-                    if payload.strip() == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(payload)
-                        text_chunk = chunk.get("text", "")
-                        if text_chunk:
-                            full_reply += text_chunk
-                            yield f"data: {json.dumps({'type': 'delta', 'text': text_chunk})}\n\n"
-                    except json.JSONDecodeError:
-                        continue
+            async with httpx.AsyncClient(timeout=60) as client:
+                async with client.stream(
+                    "POST",
+                    stream_url,
+                    json={"text": content, "history": history}
+                ) as resp:
+                    async for line in resp.aiter_lines():
+                        if not line:
+                            continue
+                        if line.startswith("data: "):
+                            payload = line[6:]
+                            if payload.strip() == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(payload)
+                                text_chunk = chunk.get("text", "")
+                                if text_chunk:
+                                    full_reply += text_chunk
+                                    yield f"data: {json.dumps({'type': 'delta', 'text': text_chunk})}\n\n".encode("utf-8")
+                            except json.JSONDecodeError:
+                                continue
         except Exception:
             logger.exception("Stream proxy failed")
             full_reply = full_reply or "抱歉，AI 服务暂时出现了问题，请稍后再试。"
 
         # Persist the AI reply
-        ai_msg = ChatMessage.objects.create(
+        ai_msg = await sync_to_async(ChatMessage.objects.create)(
             user=request.user, content=full_reply or "...",
             is_ai_response=True, session_id=session_id,
         )
-        yield f"data: {json.dumps({'type': 'done', 'ai_message': ChatMessageSerializer(ai_msg).data})}\n\n"
+        ai_msg_data = await sync_to_async(lambda: ChatMessageSerializer(ai_msg).data)()
+        yield f"data: {json.dumps({'type': 'done', 'ai_message': ai_msg_data})}\n\n".encode("utf-8")
 
     response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
     response["Cache-Control"] = "no-cache"
     response["X-Accel-Buffering"] = "no"
     return response
+
 
 
 # ── Crisis alerts ─────────────────────────────────────────────────────────────
@@ -849,9 +831,14 @@ def admin_user_update(request, pk):
     return Response(UserSerializer(user).data)
 
 
+from django.utils.decorators import method_decorator
+from django.views.decorators.cache import cache_page
+
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated, IsAdminOrProfessional])
+@cache_page(60 * 5) # Cache for 5 minutes
 def admin_dashboard_stats(request):
+
     """Dashboard statistics for admin."""
     from django.utils import timezone
     from datetime import timedelta

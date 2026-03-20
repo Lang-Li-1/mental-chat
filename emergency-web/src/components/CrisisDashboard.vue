@@ -215,7 +215,64 @@ async function handleResolve(id: number) {
 
 onMounted(() => {
   fetchAlerts()
-  pollTimer = setInterval(fetchAlerts, POLL_INTERVAL)
+  
+  // Establish WebSocket Connection
+  const wsUrl = import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8000/ws/alerts/';
+  const ws = new WebSocket(wsUrl);
+
+  ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      const msg = data.message;
+      if (msg && msg.action) {
+        if (msg.action === 'create' || msg.action === 'update') {
+          // Add or update alert in the local list
+          const incomingAlert = msg.data;
+          const idx = alerts.value.findIndex(a => a.id === incomingAlert.id);
+          
+          if (idx !== -1) {
+            // update
+            const updatedAlerts = [...alerts.value];
+            updatedAlerts[idx] = incomingAlert;
+            // if resolved, filter it out
+            if (incomingAlert.status === 'resolved') {
+                alerts.value = updatedAlerts.filter(a => a.id !== incomingAlert.id);
+            } else {
+                alerts.value = sortAlerts(updatedAlerts);
+            }
+          } else {
+            // create
+            if (incomingAlert.status !== 'resolved') {
+                alerts.value = sortAlerts([...alerts.value, incomingAlert]);
+                newAlertIds.value.add(incomingAlert.id);
+                setTimeout(() => {
+                    newAlertIds.value.delete(incomingAlert.id);
+                }, NEW_ALERT_DURATION);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Error parsing WS message', e);
+    }
+  };
+
+  ws.onerror = () => {
+    hasError.value = true;
+    errorMessage.value = 'WebSocket connection error';
+  };
+
+  ws.onclose = () => {
+    console.log('WebSocket connection closed');
+    // Fallback to polling if WS dies
+    if (!pollTimer) {
+      pollTimer = setInterval(fetchAlerts, POLL_INTERVAL);
+    }
+  };
+
+  // Only start polling if we are not relying fully on WS or if WS fails
+  // Here we'll just poll occasionally as a fallback to ensure sync
+  pollTimer = setInterval(fetchAlerts, POLL_INTERVAL * 6); // e.g. every 30s as fallback sync
   refreshDisplayTimer = setInterval(updateRefreshDisplay, 1000)
 })
 
@@ -223,6 +280,7 @@ onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
   if (refreshDisplayTimer) clearInterval(refreshDisplayTimer)
 })
+
 </script>
 
 <style scoped>

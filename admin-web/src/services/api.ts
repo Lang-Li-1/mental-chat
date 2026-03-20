@@ -22,7 +22,16 @@ api.interceptors.request.use(
 
 // Handle 401 — try refresh token first, then redirect to login
 let isRefreshing = false;
-let pendingRequests: Array<(token: string) => void> = [];
+let refreshSubscribers: ((token: string) => void)[] = [];
+
+function subscribeTokenRefresh(cb: (token: string) => void) {
+  refreshSubscribers.push(cb);
+}
+
+function onRefreshed(token: string) {
+  refreshSubscribers.forEach((cb) => cb(token));
+  refreshSubscribers = [];
+}
 
 api.interceptors.response.use(
   (response) => response,
@@ -31,7 +40,7 @@ api.interceptors.response.use(
     if (error.response?.status === 401 && !originalRequest._retry) {
       if (isRefreshing) {
         return new Promise((resolve) => {
-          pendingRequests.push((token: string) => {
+          subscribeTokenRefresh((token: string) => {
             originalRequest.headers.Authorization = `Bearer ${token}`;
             resolve(api(originalRequest));
           });
@@ -53,13 +62,12 @@ api.interceptors.response.use(
         localStorage.setItem('token', data.access);
         if (data.refresh) localStorage.setItem('refresh_token', data.refresh);
 
-        pendingRequests.forEach((cb) => cb(data.access));
-        pendingRequests = [];
+        onRefreshed(data.access);
 
         originalRequest.headers.Authorization = `Bearer ${data.access}`;
         return api(originalRequest);
       } catch {
-        pendingRequests = [];
+        refreshSubscribers = [];
         localStorage.removeItem('token');
         localStorage.removeItem('refresh_token');
         if (window.location.pathname !== '/login') {
@@ -72,5 +80,6 @@ api.interceptors.response.use(
     return Promise.reject(error);
   },
 );
+
 
 export default api;
