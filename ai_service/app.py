@@ -1,6 +1,6 @@
 """
 AI Service for Depression Intervention System
-Calls Claude API via proxy for real AI-powered mental health conversations.
+Calls Qwen (通义千问) API for AI-powered mental health conversations.
 """
 
 import asyncio
@@ -25,17 +25,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# API config
+# API config — Qwen (OpenAI-compatible)
 # ---------------------------------------------------------------------------
-API_KEY = os.environ.get(
-    "AI_API_KEY",
-    "cr_30c3809b2fc25397856427f8795eab7831840457861fa91a026551bfbc2d1949",
-)
+API_KEY = os.environ.get("AI_API_KEY", "")
+if not API_KEY:
+    raise ValueError(
+        "AI_API_KEY environment variable is required. "
+        "Set it to your Qwen/DashScope API key."
+    )
 API_BASE_URL = os.environ.get(
     "AI_BASE_URL",
-    "https://hopexiong.com.cn/claude/v1/messages",
+    "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
 )
-AI_MODEL = os.environ.get("AI_MODEL", "claude-haiku-4-5-20251001")
+AI_MODEL = os.environ.get("AI_MODEL", "qwen-plus")
 
 SYSTEM_PROMPT = (
     "你是一位专业、温暖、有同理心的AI心理健康助手。你的职责是：\n"
@@ -45,7 +47,9 @@ SYSTEM_PROMPT = (
     "4. 在发现用户有严重心理危机时，明确建议寻求专业帮助并拨打心理援助热线 400-161-9995\n"
     "5. 不做医学诊断，不开药方，不替代专业心理治疗\n\n"
     "回复要求：用中文回答，简洁温暖，2-4句话，先回应情绪再适当引导，"
-    "语气像一个关心你的朋友。"
+    "语气像一个关心你的朋友。\n"
+    "严格禁止使用任何Markdown格式（不要用**加粗**、*斜体*、#标题、-列表、```代码块等），"
+    "只输出纯文本。"
 )
 
 # ---------------------------------------------------------------------------
@@ -64,7 +68,7 @@ def _find_keywords(text, keyword_list):
 
 
 def _call_ai(user_text: str, history=None) -> str:
-    """Call Claude API (Anthropic Messages format) and return the reply.
+    """Call Qwen API (OpenAI-compatible format) and return the reply.
 
     Args:
         user_text: The current user message.
@@ -74,21 +78,20 @@ def _call_ai(user_text: str, history=None) -> str:
     if not API_KEY:
         raise ValueError("AI_API_KEY is not set")
 
-    # Use history from backend; append the new user message
-    messages = list(history or [])
+    # Build messages with system prompt + history + new user message
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages.extend(history or [])
     messages.append({"role": "user", "content": user_text})
 
     resp = http_req.post(
         API_BASE_URL,
         headers={
             "Content-Type": "application/json",
-            "x-api-key": API_KEY,
-            "anthropic-version": "2023-06-01",
+            "Authorization": f"Bearer {API_KEY}",
         },
         json={
             "model": AI_MODEL,
             "max_tokens": 500,
-            "system": SYSTEM_PROMPT,
             "messages": messages,
         },
         timeout=60,
@@ -99,7 +102,7 @@ def _call_ai(user_text: str, history=None) -> str:
         raise RuntimeError(f"AI API returned {resp.status_code}")
 
     data = resp.json()
-    return data["content"][0]["text"].strip()
+    return data["choices"][0]["message"]["content"].strip()
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +180,9 @@ def respond_stream():
     history = data.get("history", [])
     logger.info("Stream request | history=%d msgs | text=%s", len(history), text[:120])
 
-    messages = list(history or [])
+    # Build messages with system prompt + history + new user message
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages.extend(history or [])
     messages.append({"role": "user", "content": text})
 
     def generate():
@@ -186,13 +191,11 @@ def respond_stream():
                 API_BASE_URL,
                 headers={
                     "Content-Type": "application/json",
-                    "x-api-key": API_KEY,
-                    "anthropic-version": "2023-06-01",
+                    "Authorization": f"Bearer {API_KEY}",
                 },
                 json={
                     "model": AI_MODEL,
                     "max_tokens": 500,
-                    "system": SYSTEM_PROMPT,
                     "messages": messages,
                     "stream": True,
                 },
@@ -209,7 +212,6 @@ def respond_stream():
                 if not line:
                     continue
                 line_str = line.decode("utf-8")
-                # Handle both "data: {...}" and "data:{...}" formats
                 if line_str.startswith("data: "):
                     payload = line_str[6:]
                 elif line_str.startswith("data:"):
@@ -220,11 +222,11 @@ def respond_stream():
                     break
                 try:
                     chunk = json.loads(payload)
-                    if chunk.get("type") == "content_block_delta":
-                        delta_text = chunk.get("delta", {}).get("text", "")
-                        if delta_text:
-                            yield f"data: {json.dumps({'text': delta_text})}\n\n"
-                except (json.JSONDecodeError, KeyError):
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    delta_text = delta.get("content", "")
+                    if delta_text:
+                        yield f"data: {json.dumps({'text': delta_text})}\n\n"
+                except (json.JSONDecodeError, KeyError, IndexError):
                     continue
 
             yield "data: [DONE]\n\n"

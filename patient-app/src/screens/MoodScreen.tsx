@@ -467,7 +467,7 @@ export default function MoodScreen() {
           data={entries}
           keyExtractor={(item) => item.id.toString()}
           renderItem={renderEntry}
-          ListHeaderComponent={renderHeader}
+          ListHeaderComponent={renderHeader()}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#5DA480" />
           }

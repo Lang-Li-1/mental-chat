@@ -1,21 +1,88 @@
 version: "3.8"
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME:-mental_chat}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   backend:
     build:
       context: ../../backend
       dockerfile: ../ops/docker/Dockerfile.backend
     ports:
       - "8000:8000"
+    env_file:
+      - ../../.env
     environment:
-      - DEBUG=1
-      - AI_SERVICE_URL=http://ai_service:5000
       - DJANGO_SETTINGS_MODULE=config.settings
+      - DB_ENGINE=django.db.backends.postgresql
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - AI_SERVICE_URL=http://ai_service:5000/respond
     depends_on:
-      - ai_service
-    volumes:
-      - ../../backend:/app
-    command: python manage.py runserver 0.0.0.0:8000
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ai_service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  celery_worker:
+    build:
+      context: ../../backend
+      dockerfile: ../ops/docker/Dockerfile.backend
+    command: celery -A config worker -l info --concurrency=2
+    env_file:
+      - ../../.env
+    environment:
+      - DJANGO_SETTINGS_MODULE=config.settings
+      - DB_ENGINE=django.db.backends.postgresql
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - AI_SERVICE_URL=http://ai_service:5000/respond
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
 
   ai_service:
     build:
@@ -23,6 +90,15 @@ services:
       dockerfile: ../ops/docker/Dockerfile.ai_service
     ports:
       - "5000:5000"
-    volumes:
-      - ../../ai_service:/app
-    command: python app.py
+    env_file:
+      - ../../.env
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5000/health')"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  pgdata:

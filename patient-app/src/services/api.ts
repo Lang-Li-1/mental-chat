@@ -205,6 +205,8 @@ export const chatAPI = {
     onMeta: (userMessage: ChatMessage) => void,
     onDelta: (text: string) => void,
     onDone: (aiMessage: ChatMessage) => void,
+    onError?: (error: string) => void,
+    abortSignal?: AbortSignal,
   ) => {
     const token = await AsyncStorage.getItem('access_token');
     const response = await fetch(`${API_BASE_URL}/api/chat/send_message_stream`, {
@@ -214,7 +216,14 @@ export const chatAPI = {
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify(data),
+      signal: abortSignal,
     });
+
+    if (!response.ok) {
+      const errMsg = `Stream request failed: ${response.status}`;
+      onError?.(errMsg);
+      throw new Error(errMsg);
+    }
 
     const reader = response.body?.getReader();
     if (!reader) throw new Error('No reader');
@@ -222,25 +231,33 @@ export const chatAPI = {
     const decoder = new TextDecoder();
     let buffer = '';
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const payload = line.slice(6).trim();
-        if (payload === '[DONE]') return;
-        try {
-          const chunk = JSON.parse(payload);
-          if (chunk.type === 'meta') onMeta(chunk.user_message);
-          else if (chunk.type === 'delta') onDelta(chunk.text);
-          else if (chunk.type === 'done') onDone(chunk.ai_message);
-        } catch {}
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6).trim();
+          if (payload === '[DONE]') return;
+          try {
+            const chunk = JSON.parse(payload);
+            if (chunk.type === 'meta') onMeta(chunk.user_message);
+            else if (chunk.type === 'delta') onDelta(chunk.text);
+            else if (chunk.type === 'done') onDone(chunk.ai_message);
+            else if (chunk.type === 'error' || chunk.error) onError?.(chunk.error || 'Stream error');
+          } catch {}
+        }
       }
+    } catch (err) {
+      if (abortSignal?.aborted) return;
+      const errMsg = err instanceof Error ? err.message : 'Connection lost';
+      onError?.(errMsg);
+      throw err;
     }
   },
 };

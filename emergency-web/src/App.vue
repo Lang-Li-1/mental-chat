@@ -1,9 +1,31 @@
 <template>
-  <CrisisDashboard />
+  <LoginPage v-if="!authenticated" @login-success="onLoginSuccess" />
+  <CrisisDashboard v-else />
 </template>
 
 <script setup lang="ts">
+import { ref, onMounted, onUnmounted } from 'vue'
 import CrisisDashboard from './components/CrisisDashboard.vue'
+import LoginPage from './components/LoginPage.vue'
+import { isAuthenticated } from './services/api'
+
+const authenticated = ref(isAuthenticated())
+
+function onLoginSuccess() {
+  authenticated.value = true
+}
+
+function onLogout() {
+  authenticated.value = false
+}
+
+onMounted(() => {
+  window.addEventListener('emergency-logout', onLogout)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('emergency-logout', onLogout)
+})
 </script>
 
 <style>

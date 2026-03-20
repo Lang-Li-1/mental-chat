@@ -3,6 +3,48 @@ import uuid
 from django.contrib.auth.models import AbstractUser
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.db import models
+from django.utils import timezone
+
+
+# ── Soft Delete Mixin — Phase 3.6 ────────────────────────────────────────────
+
+
+class SoftDeleteManager(models.Manager):
+    """Default manager that filters out soft-deleted records."""
+
+    def get_queryset(self):
+        return super().get_queryset().filter(is_deleted=False)
+
+
+class AllObjectsManager(models.Manager):
+    """Manager that includes soft-deleted records."""
+    pass
+
+
+class SoftDeleteMixin(models.Model):
+    """Mixin for soft-delete support."""
+
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
+    objects = SoftDeleteManager()
+    all_objects = AllObjectsManager()
+
+    class Meta:
+        abstract = True
+
+    def soft_delete(self):
+        self.is_deleted = True
+        self.deleted_at = timezone.now()
+        self.save(update_fields=["is_deleted", "deleted_at"])
+
+    def restore(self):
+        self.is_deleted = False
+        self.deleted_at = None
+        self.save(update_fields=["is_deleted", "deleted_at"])
+
+
+# ── Models ────────────────────────────────────────────────────────────────────
 
 
 class User(AbstractUser):
@@ -30,7 +72,7 @@ class User(AbstractUser):
         return f"{self.username} ({self.role})"
 
 
-class MoodEntry(models.Model):
+class MoodEntry(SoftDeleteMixin):
     """Records a patient's mood at a point in time."""
 
     user = models.ForeignKey(
@@ -56,7 +98,7 @@ class MoodEntry(models.Model):
         return f"MoodEntry(user={self.user.username}, score={self.mood_score})"
 
 
-class ChatMessage(models.Model):
+class ChatMessage(SoftDeleteMixin):
     """A single message in a chat session (user or AI)."""
 
     user = models.ForeignKey(
@@ -105,7 +147,7 @@ class ChatFeedback(models.Model):
         return f"ChatFeedback({sentiment}, message={self.message_id})"
 
 
-class CrisisAlert(models.Model):
+class CrisisAlert(SoftDeleteMixin):
     """An emergency crisis alert raised for a user."""
 
     class Level(models.TextChoices):
@@ -155,6 +197,8 @@ class CrisisAlert(models.Model):
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["status", "created_at"], name="idx_crisis_status_created"),
+            # Phase 3.4: user's active alerts query
+            models.Index(fields=["user", "status"], name="idx_crisis_user_status"),
         ]
 
     def __str__(self):
@@ -265,6 +309,8 @@ class EncouragementMessage(models.Model):
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["receiver", "is_read"], name="idx_encourage_receiver_read"),
+            # Phase 3.4: sent messages query
+            models.Index(fields=["sender", "created_at"], name="idx_encourage_sender_created"),
         ]
 
     def __str__(self):
@@ -300,6 +346,8 @@ class RecoveryTask(models.Model):
         ordering = ["date", "created_at"]
         indexes = [
             models.Index(fields=["user", "date"], name="idx_recovery_user_date"),
+            # Phase 3.4: completion tracking
+            models.Index(fields=["user", "is_completed", "date"], name="idx_recovery_user_comp_date"),
         ]
         constraints = [
             models.UniqueConstraint(fields=["user", "date", "task_type"], name="uniq_user_date_tasktype"),
@@ -356,7 +404,7 @@ class Article(models.Model):
         GENERAL = "general", "综合"
 
     title = models.CharField(max_length=200)
-    summary = models.TextField(blank=True, default="")
+    summary = models.TextField(blank=True, default="", max_length=1000)
     content = models.TextField()
     url = models.URLField(max_length=500, blank=True, default="")
     category = models.CharField(max_length=30, choices=Category.choices, default=Category.GENERAL)

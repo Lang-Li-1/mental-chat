@@ -11,7 +11,7 @@ User = get_user_model()
 
 
 class RegisterSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True)
+    password = serializers.CharField(write_only=True, min_length=8)
 
     class Meta:
         model = User
@@ -24,10 +24,14 @@ class RegisterSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "At least one of email or phone must be provided."
             )
-        # Normalize empty email to None for UNIQUE constraint safety
         if not email:
             attrs["email"] = None
         return attrs
+
+    def validate_password(self, value):
+        # Phase 1.4: Django password validators
+        validate_password(value)
+        return value
 
     def create(self, validated_data):
         password = validated_data.pop("password")
@@ -70,7 +74,7 @@ class ChatMessageSerializer(serializers.ModelSerializer):
 
 
 class SendMessageSerializer(serializers.Serializer):
-    content = serializers.CharField()
+    content = serializers.CharField(max_length=5000)
     session_id = serializers.UUIDField(required=False)
 
 

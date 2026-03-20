@@ -2,7 +2,8 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { fetchActiveCrisisAlerts, updateAlertStatus, getPatientDetail, type PatientDetail } from '../services/patientService';
 import type { CrisisAlert } from '../types';
 
-const POLL_INTERVAL = 5000;
+const POLL_INTERVAL = 30000; // Fallback polling (30s instead of 5s, WebSocket is primary)
+const WS_RECONNECT_DELAY = 3000;
 const NEW_ALERT_DURATION = 10000;
 const TIMEOUT_MINUTES = 5;
 
@@ -106,8 +107,97 @@ function CrisisAlertPage() {
     notes: string;
   }>({ open: false, alertId: null, action: 'acknowledged', notes: '' });
 
+  // WebSocket state — Phase 4.2
+  const [wsConnected, setWsConnected] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
+  const wsReconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const knownIdsRef = useRef<Set<number>>(new Set());
   const isFirstLoadRef = useRef(true);
+
+  // Request desktop notification permission
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+  }, []);
+
+  // WebSocket connection for real-time alerts
+  useEffect(() => {
+    function connectWs() {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const baseUrl = (import.meta as Record<string, Record<string, string>>).env?.VITE_API_BASE_URL || window.location.origin;
+      const wsHost = baseUrl.replace(/^https?:\/\//, '');
+      const ws = new WebSocket(`${protocol}//${wsHost}/ws/alerts/`);
+
+      ws.onopen = () => {
+        setWsConnected(true);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.event === 'new') {
+            // Add new alert
+            setAlerts((prev) => {
+              const exists = prev.some((a) => a.id === msg.alert.id);
+              if (exists) return prev;
+              const updated = sortAlerts([msg.alert, ...prev]);
+              // Mark as new
+              setNewAlertIds((nids) => {
+                const next = new Set(nids);
+                next.add(msg.alert.id);
+                setTimeout(() => {
+                  setNewAlertIds((p) => { const n = new Set(p); n.delete(msg.alert.id); return n; });
+                }, NEW_ALERT_DURATION);
+                return next;
+              });
+              knownIdsRef.current.add(msg.alert.id);
+              // Desktop notification for high/critical alerts
+              if (
+                'Notification' in window &&
+                Notification.permission === 'granted' &&
+                (msg.alert.level === 'high' || msg.alert.level === 'critical')
+              ) {
+                new Notification('高危告警', {
+                  body: `用户 #${msg.alert.user} — ${levelLabels[msg.alert.level] || msg.alert.level}`,
+                  tag: `crisis-${msg.alert.id}`,
+                });
+              }
+              return updated;
+            });
+          } else if (msg.event === 'updated') {
+            // Update existing alert or remove if resolved
+            if (msg.alert.status === 'resolved') {
+              setAlerts((prev) => prev.filter((a) => a.id !== msg.alert.id));
+            } else {
+              setAlerts((prev) => prev.map((a) => (a.id === msg.alert.id ? msg.alert : a)));
+            }
+          }
+        } catch {}
+      };
+
+      ws.onclose = () => {
+        setWsConnected(false);
+        wsRef.current = null;
+        // Reconnect after delay
+        wsReconnectTimer.current = setTimeout(connectWs, WS_RECONNECT_DELAY);
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+
+      wsRef.current = ws;
+    }
+
+    connectWs();
+
+    return () => {
+      if (wsReconnectTimer.current) clearTimeout(wsReconnectTimer.current);
+      if (wsRef.current) wsRef.current.close();
+    };
+  }, []);
 
   const fetchAlerts = useCallback(async () => {
     setIsLoading(true);
@@ -235,7 +325,7 @@ function CrisisAlertPage() {
           </div>
           <div className={`crisis-status ${hasError ? 'crisis-status-error' : 'crisis-status-online'}`}>
             <span className="crisis-status-dot" />
-            <span>{hasError ? '连接异常' : '实时监控中'}</span>
+            <span>{hasError ? '连接异常' : wsConnected ? '实时监控中 (WS)' : '轮询监控中'}</span>
           </div>
         </div>
       </div>

@@ -1,19 +1,25 @@
 import json
-import uuid
 import logging
+import uuid
 
 import requests as http_requests
 from django.conf import settings
+from django.core.cache import cache
 from django.http import StreamingHttpResponse
 from django.contrib.auth import get_user_model
 from django.db import models
 from django.db.models import Avg
 from rest_framework import generics, permissions, status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.response import Response
+from rest_framework.throttling import AnonRateThrottle
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import Article, AssessmentResult, ChatFeedback, ChatMessage, CrisisAlert, EncouragementMessage, MoodEntry, PatientAssignment, RecoveryBadge, RecoveryTask, SupporterLink
+from .models import (
+    Article, AssessmentResult, ChatFeedback, ChatMessage, CrisisAlert,
+    EncouragementMessage, MoodEntry, PatientAssignment, RecoveryBadge,
+    RecoveryTask, SupporterLink,
+)
 from .permissions import (
     IsAdmin,
     IsAdminOrProfessional,
@@ -47,6 +53,65 @@ from .serializers import (
 logger = logging.getLogger(__name__)
 User = get_user_model()
 
+# ── Constants — Phase 3.2 ────────────────────────────────────────────────────
+
+CHAT_HISTORY_LIMIT = 20
+CSV_EXPORT_MAX_ROWS = 5000
+DASHBOARD_CACHE_TTL = 60  # seconds
+CRISIS_STATS_CACHE_TTL = 30
+RECOVERY_STATS_CACHE_TTL = 300  # 5 minutes
+
+
+# ── Throttle classes — Phase 1.7 ─────────────────────────────────────────────
+
+class LoginThrottle(AnonRateThrottle):
+    rate = "5/min"
+
+
+class RegisterThrottle(AnonRateThrottle):
+    rate = "3/min"
+
+
+class SendMessageThrottle(AnonRateThrottle):
+    scope = "send_message"
+
+
+# ── Shared helpers — Phase 2.2 (DRY) ─────────────────────────────────────────
+
+def _build_chat_history(user, session_id):
+    """Build conversation history from DB for AI context."""
+    history_msgs = ChatMessage.objects.filter(
+        user=user, session_id=session_id,
+    ).order_by("created_at")[:CHAT_HISTORY_LIMIT]
+    return [
+        {
+            "role": "assistant" if m.is_ai_response else "user",
+            "content": m.content,
+        }
+        for m in history_msgs
+    ]
+
+
+def _verify_patient_access(user, patient_id):
+    """Verify that a professional/supporter has access to a patient. Returns (ok, error_response)."""
+    if user.role == "admin":
+        return True, None
+    if user.role == "professional":
+        if not PatientAssignment.objects.filter(professional=user, patient_id=patient_id).exists():
+            return False, Response(
+                {"detail": "You are not assigned to this patient."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return True, None
+    if user.role == "supporter":
+        if not SupporterLink.objects.filter(supporter=user, patient_id=patient_id).exists():
+            return False, Response(
+                {"detail": "You are not linked to this patient."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return True, None
+    return False, Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+
 
 # ── Health check ──────────────────────────────────────────────────────────────
 
@@ -57,11 +122,12 @@ def health_check(request):
     return Response({"status": "ok"}, status=status.HTTP_200_OK)
 
 
-# ── Auth views ────────────────────────────────────────────────────────────────
+# ── Auth views — Phase 1.7 throttles ─────────────────────────────────────────
 
 
 @api_view(["POST"])
 @permission_classes([permissions.AllowAny])
+@throttle_classes([RegisterThrottle])
 def register(request):
     serializer = RegisterSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -81,6 +147,7 @@ def register(request):
 
 @api_view(["POST"])
 @permission_classes([permissions.AllowAny])
+@throttle_classes([LoginThrottle])
 def login(request):
     username = request.data.get("username", "")
     password = request.data.get("password", "")
@@ -122,7 +189,7 @@ def me(request):
     return Response(UserSerializer(request.user).data)
 
 
-# ── Mood entries ──────────────────────────────────────────────────────────────
+# ── Mood entries — Phase 1.9 access control ───────────────────────────────────
 
 
 class MoodEntryListCreateView(generics.ListCreateAPIView):
@@ -134,7 +201,6 @@ class MoodEntryListCreateView(generics.ListCreateAPIView):
         qs = MoodEntry.objects.all()
 
         if user.role == "admin":
-            # Admin can see all entries; optionally filter by patient_id
             patient_id = self.request.query_params.get("patient_id")
             if patient_id:
                 qs = qs.filter(user_id=patient_id)
@@ -142,21 +208,21 @@ class MoodEntryListCreateView(generics.ListCreateAPIView):
         elif user.role == "patient":
             qs = qs.filter(user=user)
         elif user.role == "professional":
-            # Professionals see entries for a specific patient if patient_id
-            # query param is provided, otherwise entries of their assigned patients.
             patient_id = self.request.query_params.get("patient_id")
             if patient_id:
+                # Phase 1.9: verify assignment
+                if not PatientAssignment.objects.filter(
+                    professional=user, patient_id=patient_id
+                ).exists():
+                    return MoodEntry.objects.none()
                 qs = qs.filter(user_id=patient_id)
             else:
                 assigned_ids = PatientAssignment.objects.filter(
                     professional=user
                 ).values_list("patient_id", flat=True)
                 qs = qs.filter(user_id__in=assigned_ids)
-
-        # Additional optional filters
-        user_id = self.request.query_params.get("user_id")
-        if user_id and user.role == "professional":
-            qs = qs.filter(user_id=user_id)
+        else:
+            return MoodEntry.objects.none()
 
         return qs
 
@@ -164,7 +230,6 @@ class MoodEntryListCreateView(generics.ListCreateAPIView):
         serializer.save(user=self.request.user)
 
     def create(self, request, *args, **kwargs):
-        # Only patients can create mood entries
         if request.user.role != "patient":
             return Response(
                 {"detail": "Only patients can create mood entries."},
@@ -173,7 +238,7 @@ class MoodEntryListCreateView(generics.ListCreateAPIView):
         return super().create(request, *args, **kwargs)
 
 
-# ── Assessments ──────────────────────────────────────────────────────────────
+# ── Assessments — Phase 1.9 access control ───────────────────────────────────
 
 
 class AssessmentResultListCreateView(generics.ListCreateAPIView):
@@ -186,10 +251,27 @@ class AssessmentResultListCreateView(generics.ListCreateAPIView):
         qs = AssessmentResult.objects.all()
         if user.role == "patient":
             qs = qs.filter(user=user)
-        elif user.role in ("admin", "professional"):
+        elif user.role == "admin":
             patient_id = self.request.query_params.get("patient_id")
             if patient_id:
                 qs = qs.filter(user_id=patient_id)
+        elif user.role == "professional":
+            patient_id = self.request.query_params.get("patient_id")
+            if patient_id:
+                # Phase 1.9: verify assignment
+                if not PatientAssignment.objects.filter(
+                    professional=user, patient_id=patient_id
+                ).exists():
+                    return AssessmentResult.objects.none()
+                qs = qs.filter(user_id=patient_id)
+            else:
+                assigned_ids = PatientAssignment.objects.filter(
+                    professional=user
+                ).values_list("patient_id", flat=True)
+                qs = qs.filter(user_id__in=assigned_ids)
+        else:
+            return AssessmentResult.objects.none()
+
         assessment_type = self.request.query_params.get("type")
         if assessment_type:
             qs = qs.filter(assessment_type=assessment_type)
@@ -199,11 +281,12 @@ class AssessmentResultListCreateView(generics.ListCreateAPIView):
         serializer.save(user=self.request.user)
 
 
-# ── Chat ──────────────────────────────────────────────────────────────────────
+# ── Chat — Phase 1.7 throttle, Phase 2.2 async crisis, Phase 3.3 error handling
 
 
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
+@throttle_classes([SendMessageThrottle])
 def send_message(request):
     serializer = SendMessageSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -219,38 +302,34 @@ def send_message(request):
         session_id=session_id,
     )
 
-    # Crisis detection — call Flask /crisis_check
+    # Crisis detection — async via Celery (Phase 2.2)
     crisis_detected = False
     try:
-        crisis_check_url = settings.AI_SERVICE_URL.rsplit("/", 1)[0] + "/crisis_check"
-        crisis_resp = http_requests.post(
-            crisis_check_url,
-            json={"text": content},
-            timeout=settings.AI_SERVICE_TIMEOUT,
-        )
-        crisis_resp.raise_for_status()
-        crisis_data = crisis_resp.json()
-        if crisis_data.get("is_crisis"):
-            crisis_detected = True
-            CrisisAlert.objects.create(
-                user=request.user,
-                level=crisis_data.get("risk_level", "medium"),
-                description=content,
-            )
+        from .tasks import check_crisis_async
+        check_crisis_async.delay(request.user.id, content)
     except Exception:
-        logger.debug("Crisis check failed, continuing with normal chat flow")
+        # Fallback: synchronous crisis check
+        try:
+            crisis_check_url = settings.AI_SERVICE_URL.rsplit("/", 1)[0] + "/crisis_check"
+            crisis_resp = http_requests.post(
+                crisis_check_url,
+                json={"text": content},
+                timeout=settings.AI_SERVICE_TIMEOUT,
+            )
+            crisis_resp.raise_for_status()
+            crisis_data = crisis_resp.json()
+            if crisis_data.get("is_crisis"):
+                crisis_detected = True
+                CrisisAlert.objects.create(
+                    user=request.user,
+                    level=crisis_data.get("risk_level", "medium"),
+                    description=content,
+                )
+        except Exception:
+            logger.warning("Crisis check failed for user %s", request.user.id)
 
-    # Build conversation history from DB for AI context
-    history_msgs = ChatMessage.objects.filter(
-        user=request.user, session_id=session_id
-    ).order_by("created_at")[:20]
-    history = [
-        {
-            "role": "assistant" if m.is_ai_response else "user",
-            "content": m.content,
-        }
-        for m in history_msgs
-    ]
+    # Build conversation history (shared helper)
+    history = _build_chat_history(request.user, session_id)
 
     # Call the Flask AI service
     ai_reply_text = ""
@@ -279,11 +358,11 @@ def send_message(request):
     except http_requests.RequestException as exc:
         ai_error = f"AI service error: {str(exc)}"
         ai_reply_text = "I'm sorry, an error occurred while communicating with the AI service."
-        logger.exception("AI service request failed")
+        logger.warning("AI service request failed: %s", exc)
     except (ValueError, KeyError):
         ai_error = "Invalid response from AI service."
         ai_reply_text = "I'm sorry, I received an unexpected response from the AI service."
-        logger.exception("Failed to parse AI service response")
+        logger.warning("Failed to parse AI service response")
 
     # Store the AI reply
     ai_msg = ChatMessage.objects.create(
@@ -318,7 +397,6 @@ def chat_sessions(request):
         )
         .order_by("-last_message_at")
     )
-    # Batch fetch first user message per session (single query instead of N)
     session_ids = [s["session_id"] for s in sessions]
     first_msgs = {}
     if session_ids:
@@ -373,6 +451,7 @@ def chat_message_feedback(request, message_id):
 
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
+@throttle_classes([SendMessageThrottle])
 def send_message_stream(request):
     """Send a message and stream the AI reply via SSE."""
     serializer = SendMessageSerializer(data=request.data)
@@ -387,29 +466,28 @@ def send_message_stream(request):
         is_ai_response=False, session_id=session_id,
     )
 
-    # Crisis detection (fire and forget)
+    # Crisis detection — async via Celery (Phase 2.2)
     try:
-        crisis_url = settings.AI_SERVICE_URL.rsplit("/", 1)[0] + "/crisis_check"
-        crisis_resp = http_requests.post(
-            crisis_url, json={"text": content}, timeout=5,
-        )
-        crisis_data = crisis_resp.json()
-        if crisis_data.get("is_crisis"):
-            CrisisAlert.objects.create(
-                user=request.user, level=crisis_data.get("risk_level", "medium"),
-                description=content,
-            )
+        from .tasks import check_crisis_async
+        check_crisis_async.delay(request.user.id, content)
     except Exception:
-        pass
+        # Fallback: synchronous
+        try:
+            crisis_url = settings.AI_SERVICE_URL.rsplit("/", 1)[0] + "/crisis_check"
+            crisis_resp = http_requests.post(
+                crisis_url, json={"text": content}, timeout=5,
+            )
+            crisis_data = crisis_resp.json()
+            if crisis_data.get("is_crisis"):
+                CrisisAlert.objects.create(
+                    user=request.user, level=crisis_data.get("risk_level", "medium"),
+                    description=content,
+                )
+        except Exception:
+            logger.warning("Crisis check failed (stream) for user %s", request.user.id)
 
-    # Build history
-    history_msgs = ChatMessage.objects.filter(
-        user=request.user, session_id=session_id,
-    ).order_by("created_at")[:20]
-    history = [
-        {"role": "assistant" if m.is_ai_response else "user", "content": m.content}
-        for m in history_msgs
-    ]
+    # Build history (shared helper)
+    history = _build_chat_history(request.user, session_id)
 
     # Stream from AI service
     stream_url = settings.AI_SERVICE_URL.rsplit("/", 1)[0] + "/respond_stream"
@@ -443,7 +521,7 @@ def send_message_stream(request):
                     except json.JSONDecodeError:
                         continue
         except Exception:
-            logger.exception("Stream proxy failed")
+            logger.warning("Stream proxy failed for user %s", request.user.id)
             full_reply = full_reply or "抱歉，AI 服务暂时出现了问题，请稍后再试。"
 
         # Persist the AI reply
@@ -459,29 +537,26 @@ def send_message_stream(request):
     return response
 
 
-# ── Crisis alerts ─────────────────────────────────────────────────────────────
+# ── Crisis alerts — Phase 1.3: authentication ─────────────────────────────────
 
 
 class CrisisAlertCreateView(generics.CreateAPIView):
-    """Create a crisis alert. No authentication required (emergency feature)."""
-
+    """Create a crisis alert. Requires authentication."""
     serializer_class = CrisisAlertSerializer
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticated]
     queryset = CrisisAlert.objects.all()
 
 
 class ActiveCrisisAlertListView(generics.ListAPIView):
-    """List all active/acknowledged crisis alerts. No authentication required (emergency service)."""
-
+    """List all active/acknowledged crisis alerts. Requires admin/professional."""
     serializer_class = CrisisAlertSerializer
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrProfessional]
 
     def get_queryset(self):
         qs = CrisisAlert.objects.filter(
             status__in=[CrisisAlert.Status.ACTIVE, CrisisAlert.Status.ACKNOWLEDGED]
         ).select_related("handled_by")
 
-        # Optional filters
         level = self.request.query_params.get("level")
         if level:
             qs = qs.filter(level=level)
@@ -494,7 +569,7 @@ class ActiveCrisisAlertListView(generics.ListAPIView):
 
 
 @api_view(["PATCH"])
-@permission_classes([permissions.AllowAny])
+@permission_classes([permissions.IsAuthenticated, IsAdminOrProfessional])
 def crisis_alert_update_status(request, pk):
     """Update crisis alert status (acknowledge or resolve)."""
     try:
@@ -541,8 +616,7 @@ def crisis_alert_update_status(request, pk):
 
 
 class AllCrisisAlertListView(generics.ListAPIView):
-    """List all crisis alerts (including resolved) with optional filters. Requires authentication."""
-
+    """List all crisis alerts (including resolved) with optional filters."""
     serializer_class = CrisisAlertSerializer
     permission_classes = [permissions.IsAuthenticated, IsAdminOrProfessional]
 
@@ -575,7 +649,12 @@ class AllCrisisAlertListView(generics.ListAPIView):
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated, IsAdminOrProfessional])
 def crisis_alert_stats(request):
-    """Return crisis alert statistics."""
+    """Return crisis alert statistics (cached)."""
+    cache_key = "crisis_alert_stats"
+    cached = cache.get(cache_key)
+    if cached:
+        return Response(cached)
+
     from django.utils import timezone
     from datetime import timedelta
 
@@ -609,7 +688,7 @@ def crisis_alert_stats(request):
         )
         avg_resolution = total_seconds / resolved_alerts.count()
 
-    return Response({
+    data = {
         "total": total,
         "active": active,
         "acknowledged": acknowledged,
@@ -617,7 +696,9 @@ def crisis_alert_stats(request):
         "last_7_days": last_7,
         "last_30_days": last_30,
         "avg_resolution_seconds": avg_resolution,
-    })
+    }
+    cache.set(cache_key, data, CRISIS_STATS_CACHE_TTL)
+    return Response(data)
 
 
 # ── Patient list (for professionals) ─────────────────────────────────────────
@@ -625,7 +706,6 @@ def crisis_alert_stats(request):
 
 class PatientListView(generics.ListAPIView):
     """List patients assigned to the current professional, or all for admin."""
-
     serializer_class = PatientAssignmentSerializer
     permission_classes = [permissions.IsAuthenticated, IsAdminOrProfessional]
 
@@ -638,7 +718,7 @@ class PatientListView(generics.ListAPIView):
         ).select_related("patient")
 
 
-# ── Patient status summary (for supporters) ──────────────────────────────────
+# ── Patient status summary — Phase 1.9 access control ────────────────────────
 
 
 @api_view(["GET"])
@@ -649,6 +729,12 @@ def patient_status_summary(request, pk):
             {"detail": "Permission denied."},
             status=status.HTTP_403_FORBIDDEN,
         )
+
+    # Phase 1.9: verify access
+    ok, err = _verify_patient_access(request.user, pk)
+    if not ok:
+        return err
+
     try:
         patient = User.objects.get(pk=pk, role="patient")
     except User.DoesNotExist:
@@ -676,19 +762,24 @@ def patient_status_summary(request, pk):
     return Response(data)
 
 
-# ── Patient detail (for admin/professional) ──────────────────────────────────
+# ── Patient detail — Phase 1.9 access control, Phase 3.5 N+1 fix ─────────────
 
 
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated, IsAdminOrProfessional])
 def patient_detail(request, pk):
     """Detailed patient data: mood timeline, chat summary, crisis history."""
+    # Phase 1.9: verify access
+    ok, err = _verify_patient_access(request.user, pk)
+    if not ok:
+        return err
+
     try:
         patient = User.objects.get(pk=pk, role="patient")
     except User.DoesNotExist:
         return Response({"detail": "Patient not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    # Mood entries (last 30)
+    # Mood entries (last 30) + aggregation in single query
     mood_entries = MoodEntry.objects.filter(user=patient).order_by("-created_at")[:30]
     avg_mood = MoodEntry.objects.filter(user=patient).aggregate(avg=Avg("mood_score"))["avg"]
 
@@ -703,7 +794,6 @@ def patient_detail(request, pk):
         )
         .order_by("-last_at")[:5]
     )
-    # Batch fetch first user message per session (single query)
     detail_session_ids = [s["session_id"] for s in recent_sessions]
     detail_first_msgs = {}
     if detail_session_ids:
@@ -723,7 +813,7 @@ def patient_detail(request, pk):
             "preview": (detail_first_msgs.get(s["session_id"]) or "")[:80],
         })
 
-    # Crisis alerts
+    # Crisis alerts — Phase 3.5: select_related already used
     crisis_alerts = CrisisAlert.objects.filter(user=patient).select_related("handled_by").order_by("-created_at")[:20]
 
     # Assessment results
@@ -792,7 +882,6 @@ def admin_assignments(request):
     patient_id = serializer.validated_data["patient_id"]
     professional_id = serializer.validated_data["professional_id"]
 
-    # Check if assignment already exists
     if PatientAssignment.objects.filter(
         patient_id=patient_id, professional_id=professional_id
     ).exists():
@@ -852,16 +941,21 @@ def admin_user_update(request, pk):
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated, IsAdminOrProfessional])
 def admin_dashboard_stats(request):
-    """Dashboard statistics for admin."""
+    """Dashboard statistics for admin (cached)."""
+    cache_key = "admin_dashboard_stats"
+    cached = cache.get(cache_key)
+    if cached:
+        return Response(cached)
+
     from django.utils import timezone
     from datetime import timedelta
-    from django.db.models import Count, Q, Case, When, IntegerField
+    from django.db.models import Count, Q
 
     now = timezone.now()
     last_7 = now - timedelta(days=7)
     last_30 = now - timedelta(days=30)
 
-    # Users: 1 query with conditional aggregation (was 4)
+    # Users: 1 query with conditional aggregation
     user_stats = User.objects.aggregate(
         total=Count("id"),
         patients=Count("id", filter=Q(role="patient")),
@@ -869,7 +963,7 @@ def admin_dashboard_stats(request):
         supporters=Count("id", filter=Q(role="supporter")),
     )
 
-    # Mood: 1 query (was 4)
+    # Mood: 1 query
     mood_stats = MoodEntry.objects.aggregate(
         total=Count("id"),
         last_7_days=Count("id", filter=Q(created_at__gte=last_7)),
@@ -877,13 +971,13 @@ def admin_dashboard_stats(request):
         avg=Avg("mood_score"),
     )
 
-    # Chat: 1 query (was 2)
+    # Chat: 1 query
     chat_stats = ChatMessage.objects.aggregate(
         total=Count("id"),
         last_7_days=Count("id", filter=Q(created_at__gte=last_7)),
     )
 
-    # Alerts: 1 query (was 5)
+    # Alerts: 1 query
     alert_stats = CrisisAlert.objects.aggregate(
         total=Count("id"),
         active=Count("id", filter=Q(status=CrisisAlert.Status.ACTIVE)),
@@ -893,7 +987,7 @@ def admin_dashboard_stats(request):
     )
 
     avg_mood = mood_stats["avg"]
-    return Response({
+    data = {
         "users": {
             "total": user_stats["total"],
             "patients": user_stats["patients"],
@@ -917,7 +1011,9 @@ def admin_dashboard_stats(request):
             "last_7_days": alert_stats["last_7_days"],
             "last_30_days": alert_stats["last_30_days"],
         },
-    })
+    }
+    cache.set(cache_key, data, DASHBOARD_CACHE_TTL)
+    return Response(data)
 
 
 @api_view(["DELETE"])
@@ -988,26 +1084,21 @@ def _check_and_award_badges(user):
     """Check and award badges based on user activity."""
     awarded = set(RecoveryBadge.objects.filter(user=user).values_list("badge_type", flat=True))
 
-    # First mood
     if "first_mood" not in awarded and MoodEntry.objects.filter(user=user).exists():
         RecoveryBadge.objects.create(user=user, badge_type="first_mood")
 
-    # First chat
     if "first_chat" not in awarded and ChatMessage.objects.filter(user=user, is_ai_response=False).exists():
         RecoveryBadge.objects.create(user=user, badge_type="first_chat")
 
-    # First assessment
     if "first_assessment" not in awarded and AssessmentResult.objects.filter(user=user).exists():
         RecoveryBadge.objects.create(user=user, badge_type="first_assessment")
 
-    # Task completion counts
     completed_count = RecoveryTask.objects.filter(user=user, is_completed=True).count()
     if "tasks_10" not in awarded and completed_count >= 10:
         RecoveryBadge.objects.create(user=user, badge_type="tasks_10")
     if "tasks_50" not in awarded and completed_count >= 50:
         RecoveryBadge.objects.create(user=user, badge_type="tasks_50")
 
-    # Streak detection — single query instead of up to 30
     streak = _calc_streak(user)
     if "streak_3" not in awarded and streak >= 3:
         RecoveryBadge.objects.create(user=user, badge_type="streak_3")
@@ -1045,7 +1136,15 @@ def recovery_task_complete(request, pk):
     task.completed_at = timezone.now()
     task.save()
 
-    _check_and_award_badges(request.user)
+    # Invalidate recovery stats cache
+    cache.delete(f"recovery_stats_{request.user.id}")
+
+    # Award badges async if possible, else sync
+    try:
+        from .tasks import award_badges_async
+        award_badges_async.delay(request.user.id)
+    except Exception:
+        _check_and_award_badges(request.user)
 
     return Response(RecoveryTaskSerializer(task).data)
 
@@ -1062,21 +1161,25 @@ def recovery_badges(request):
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated])
 def recovery_stats(request):
-    """Get recovery plan statistics."""
+    """Get recovery plan statistics (cached per user)."""
+    cache_key = f"recovery_stats_{request.user.id}"
+    cached = cache.get(cache_key)
+    if cached:
+        return Response(cached)
+
     total_completed = RecoveryTask.objects.filter(user=request.user, is_completed=True).count()
     total_tasks = RecoveryTask.objects.filter(user=request.user).count()
-
-    # Current streak — single query
     streak = _calc_streak(request.user)
-
     badge_count = RecoveryBadge.objects.filter(user=request.user).count()
 
-    return Response({
+    data = {
         "total_completed": total_completed,
         "total_tasks": total_tasks,
         "current_streak": streak,
         "badge_count": badge_count,
-    })
+    }
+    cache.set(cache_key, data, RECOVERY_STATS_CACHE_TTL)
+    return Response(data)
 
 
 # ── Supporter views ──────────────────────────────────────────────────────────
@@ -1089,7 +1192,6 @@ def supporter_linked_patients(request):
     if request.user.role == "supporter":
         links = SupporterLink.objects.filter(supporter=request.user).select_related("patient")
         return Response(SupporterLinkSerializer(links, many=True).data)
-    # Professional: use PatientAssignment
     assignments = PatientAssignment.objects.filter(professional=request.user).select_related("patient")
     return Response(PatientAssignmentSerializer(assignments, many=True).data)
 
@@ -1132,7 +1234,6 @@ def send_encouragement(request):
     if not receiver_id or not content:
         return Response({"detail": "receiver_id and content are required."}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Verify supporter is linked to this patient
     if not SupporterLink.objects.filter(supporter=request.user, patient_id=receiver_id).exists():
         return Response({"detail": "You are not linked to this patient."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -1149,7 +1250,6 @@ def send_encouragement(request):
 def received_encouragements(request):
     """List encouragement messages received by the current patient."""
     messages = EncouragementMessage.objects.filter(receiver=request.user).order_by("-created_at")[:50]
-    # Mark as read
     unread_ids = [m.id for m in messages if not m.is_read]
     if unread_ids:
         EncouragementMessage.objects.filter(id__in=unread_ids).update(is_read=True)
@@ -1173,7 +1273,6 @@ def article_list(request):
     """List published articles (all users) or create new (admin/professional)."""
     if request.method == "GET":
         qs = Article.objects.select_related("author")
-        # Patients only see published articles
         if request.user.role == "patient":
             qs = qs.filter(is_published=True)
         category = request.query_params.get("category")
@@ -1185,7 +1284,6 @@ def article_list(request):
             qs = qs.filter(Q(title__icontains=search) | Q(summary__icontains=search))
         return Response(ArticleSerializer(qs[:100], many=True).data)
 
-    # POST — create
     if request.user.role not in ("admin", "professional"):
         return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
     serializer = ArticleSerializer(data=request.data)
@@ -1208,7 +1306,6 @@ def article_detail(request, pk):
             return Response({"detail": "Article not found."}, status=status.HTTP_404_NOT_FOUND)
         return Response(ArticleSerializer(article).data)
 
-    # PUT / DELETE require admin or professional
     if request.user.role not in ("admin", "professional"):
         return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -1216,27 +1313,29 @@ def article_detail(request, pk):
         article.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
-    # PUT
     serializer = ArticleSerializer(article, data=request.data, partial=True)
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data)
 
 
-# ── Account deletion ───────────────────────────────────────────────────────
+# ── Account deletion — Phase 3.6: anonymization instead of hard delete ────────
 
 
 @api_view(["DELETE"])
 @permission_classes([permissions.IsAuthenticated])
 def delete_my_account(request):
-    """Allow a user to permanently delete their own account and all associated data.
-
-    All related data (mood entries, chat messages, crisis alerts, assessments,
-    recovery tasks/badges, assignments, supporter links, encouragement messages)
-    is automatically deleted via CASCADE foreign keys.
-    """
-    request.user.delete()
-    return Response({"detail": "Account deleted."}, status=status.HTTP_200_OK)
+    """Anonymize user account instead of physical deletion."""
+    user = request.user
+    import secrets
+    anon_suffix = secrets.token_hex(8)
+    user.username = f"deleted_{anon_suffix}"
+    user.email = None
+    user.phone = None
+    user.is_active = False
+    user.set_unusable_password()
+    user.save()
+    return Response({"detail": "Account anonymized."}, status=status.HTTP_200_OK)
 
 
 # ── CSV export ─────────────────────────────────────────────────────────────
@@ -1255,7 +1354,7 @@ def export_patients_csv(request):
     writer = csv.writer(response)
     writer.writerow(["ID", "用户名", "邮箱", "手机", "角色", "注册时间", "是否活跃"])
 
-    users = User.objects.filter(role="patient").order_by("-created_at")
+    users = User.objects.filter(role="patient").order_by("-created_at")[:CSV_EXPORT_MAX_ROWS]
     for u in users:
         writer.writerow([
             u.id, u.username, u.email or "", u.phone or "",
@@ -1278,7 +1377,7 @@ def export_mood_entries_csv(request):
     writer = csv.writer(response)
     writer.writerow(["ID", "用户ID", "用户名", "心情分数", "内容", "记录时间"])
 
-    entries = MoodEntry.objects.select_related("user").order_by("-created_at")[:5000]
+    entries = MoodEntry.objects.select_related("user").order_by("-created_at")[:CSV_EXPORT_MAX_ROWS]
     for e in entries:
         writer.writerow([
             e.id, e.user_id, e.user.username, e.mood_score,
@@ -1301,7 +1400,7 @@ def export_crisis_alerts_csv(request):
     writer = csv.writer(response)
     writer.writerow(["ID", "用户ID", "级别", "状态", "描述", "处理人", "处理记录", "创建时间", "确认时间", "解决时间"])
 
-    alerts = CrisisAlert.objects.select_related("handled_by").order_by("-created_at")[:5000]
+    alerts = CrisisAlert.objects.select_related("handled_by").order_by("-created_at")[:CSV_EXPORT_MAX_ROWS]
     level_map = {"low": "低", "medium": "中", "high": "高", "critical": "紧急"}
     status_map = {"active": "活跃", "acknowledged": "已确认", "resolved": "已解决"}
     for a in alerts:
@@ -1347,7 +1446,7 @@ def tts_proxy(request):
             content_type="audio/mpeg",
         )
     except Exception:
-        logger.exception("TTS proxy failed")
+        logger.warning("TTS proxy failed")
         return Response(
             {"detail": "TTS service unavailable."},
             status=status.HTTP_502_BAD_GATEWAY,

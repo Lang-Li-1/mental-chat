@@ -20,7 +20,7 @@
         <div class="header-right">
           <div class="status-indicator" :class="{ 'status-online': !hasError, 'status-error': hasError }">
             <span class="status-dot"></span>
-            <span class="status-text">{{ hasError ? '连接异常' : '实时监控中' }}</span>
+            <span class="status-text">{{ hasError ? '连接异常' : wsConnected ? '实时监控中 (WS)' : '轮询监控中' }}</span>
           </div>
         </div>
       </div>
@@ -95,8 +95,16 @@ import { fetchActiveCrisisAlerts, updateAlertStatus } from '../services/api'
 import type { CrisisAlert } from '../types/crisis'
 import AlertCard from './AlertCard.vue'
 
-const POLL_INTERVAL = 5000
+const POLL_INTERVAL = 30000 // Fallback polling (30s, WebSocket is primary)
+const WS_RECONNECT_DELAY = 3000
 const NEW_ALERT_DURATION = 10000
+
+const levelLabels: Record<string, string> = {
+  high: '高危',
+  medium: '中危',
+  low: '低危',
+  critical: '严重',
+}
 
 const alerts = ref<CrisisAlert[]>([])
 const isLoading = ref(false)
@@ -106,11 +114,14 @@ const lastRefreshTime = ref<Date | null>(null)
 const lastRefreshDisplay = ref('--')
 const newAlertIds = ref<Set<number>>(new Set())
 const updatingAlertId = ref<number | null>(null)
+const wsConnected = ref(false)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let refreshDisplayTimer: ReturnType<typeof setInterval> | null = null
 let knownAlertIds = new Set<number>()
 let isFirstLoad = true
+let ws: WebSocket | null = null
+let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null
 
 const highCount = computed(() => alerts.value.filter((a) => a.level === 'high' || a.level === 'critical').length)
 const mediumCount = computed(() => alerts.value.filter((a) => a.level === 'medium').length)
@@ -213,8 +224,66 @@ async function handleResolve(id: number) {
   }
 }
 
+function connectWs() {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const baseUrl = import.meta.env.VITE_API_BASE_URL || window.location.origin
+  const wsHost = baseUrl.replace(/^https?:\/\//, '')
+  const socket = new WebSocket(`${protocol}//${wsHost}/ws/alerts/`)
+
+  socket.onopen = () => {
+    wsConnected.value = true
+  }
+
+  socket.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data)
+      if (msg.event === 'new') {
+        const exists = alerts.value.some((a) => a.id === msg.alert.id)
+        if (!exists) {
+          alerts.value = sortAlerts([msg.alert, ...alerts.value])
+          newAlertIds.value.add(msg.alert.id)
+          knownAlertIds.add(msg.alert.id)
+          setTimeout(() => { newAlertIds.value.delete(msg.alert.id) }, NEW_ALERT_DURATION)
+          // Desktop notification for high/critical
+          if ('Notification' in window && Notification.permission === 'granted' &&
+              (msg.alert.level === 'high' || msg.alert.level === 'critical')) {
+            new Notification('高危告警', {
+              body: `用户 #${msg.alert.user} — ${levelLabels[msg.alert.level] || msg.alert.level}`,
+              tag: `crisis-${msg.alert.id}`,
+            })
+          }
+        }
+      } else if (msg.event === 'updated') {
+        if (msg.alert.status === 'resolved') {
+          alerts.value = alerts.value.filter((a) => a.id !== msg.alert.id)
+        } else {
+          alerts.value = alerts.value.map((a) => (a.id === msg.alert.id ? msg.alert : a))
+        }
+      }
+    } catch {}
+  }
+
+  socket.onclose = () => {
+    wsConnected.value = false
+    ws = null
+    wsReconnectTimer = setTimeout(connectWs, WS_RECONNECT_DELAY)
+  }
+
+  socket.onerror = () => {
+    socket.close()
+  }
+
+  ws = socket
+}
+
 onMounted(() => {
+  // Request desktop notification permission
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission()
+  }
+
   fetchAlerts()
+  connectWs()
   pollTimer = setInterval(fetchAlerts, POLL_INTERVAL)
   refreshDisplayTimer = setInterval(updateRefreshDisplay, 1000)
 })
@@ -222,6 +291,8 @@ onMounted(() => {
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
   if (refreshDisplayTimer) clearInterval(refreshDisplayTimer)
+  if (wsReconnectTimer) clearTimeout(wsReconnectTimer)
+  if (ws) ws.close()
 })
 </script>
 
