@@ -126,7 +126,7 @@ function CrisisAlertPage() {
   useEffect(() => {
     function connectWs() {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const baseUrl = (import.meta as Record<string, Record<string, string>>).env?.VITE_API_BASE_URL || window.location.origin;
+      const baseUrl = import.meta.env.VITE_API_BASE_URL || window.location.origin;
       const wsHost = baseUrl.replace(/^https?:\/\//, '');
       const ws = new WebSocket(`${protocol}//${wsHost}/ws/alerts/`);
 

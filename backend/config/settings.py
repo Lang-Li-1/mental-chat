@@ -204,12 +204,14 @@ CORS_ALLOW_CREDENTIALS = True
 # ---------------------------------------------------------------------------
 
 if not DEBUG:
-    SECURE_HSTS_SECONDS = 31536000
-    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-    SECURE_HSTS_PRELOAD = True
-    SECURE_SSL_REDIRECT = True
-    SESSION_COOKIE_SECURE = True
-    CSRF_COOKIE_SECURE = True
+    # Only enable SSL redirect when running behind HTTPS (set SECURE_SSL=true in env)
+    if os.environ.get("SECURE_SSL", "false").lower() in ("true", "1", "yes"):
+        SECURE_HSTS_SECONDS = 31536000
+        SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+        SECURE_HSTS_PRELOAD = True
+        SECURE_SSL_REDIRECT = True
+        SESSION_COOKIE_SECURE = True
+        CSRF_COOKIE_SECURE = True
     X_FRAME_OPTIONS = "DENY"
     SECURE_CONTENT_TYPE_NOSNIFF = True
     SECURE_BROWSER_XSS_FILTER = True
