@@ -6,6 +6,16 @@ export async function login(data: LoginRequest): Promise<LoginResponse> {
   return response.data;
 }
 
+export async function registerProfessional(data: {
+  username: string;
+  password: string;
+  email?: string;
+  phone?: string;
+}): Promise<LoginResponse> {
+  const response = await api.post<LoginResponse>('/api/auth/register_professional', data);
+  return response.data;
+}
+
 export async function getPatients(): Promise<Patient[]> {
   const response = await api.get<PaginatedResponse<PatientAssignment>>('/api/patients');
   return response.data.results.map((assignment) => assignment.patient);

@@ -131,7 +131,36 @@ def health_check(request):
 @permission_classes([permissions.AllowAny])
 @throttle_classes([RegisterThrottle])
 def register(request):
+    # 公共注册仅允许 patient / supporter；admin/professional 必须走专用入口
+    role = (request.data.get("role") or "patient").strip()
+    if role not in ("patient", "supporter"):
+        return Response(
+            {"detail": "公共注册不支持该角色。"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     serializer = RegisterSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    user = serializer.save()
+    refresh = RefreshToken.for_user(user)
+    return Response(
+        {
+            "user": UserSerializer(user).data,
+            "tokens": {
+                "refresh": str(refresh),
+                "access": str(refresh.access_token),
+            },
+        },
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def register_professional(request):
+    """医生自助注册：role 强制 professional，自动登录返回 token。"""
+    data = (request.data or {}).copy()
+    data["role"] = "professional"
+    serializer = RegisterSerializer(data=data)
     serializer.is_valid(raise_exception=True)
     user = serializer.save()
     refresh = RefreshToken.for_user(user)
