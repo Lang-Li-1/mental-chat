@@ -23,10 +23,11 @@ fi
 # ── 依赖检查 ────────────────────────────────────────────────────────────
 command -v expect >/dev/null || { echo "错误: 需要 expect (brew install expect)" >&2; exit 1; }
 
-if [ ! -d "admin-web/dist" ] || [ ! -d "emergency-web/dist" ]; then
-  echo "错误: 前端 dist 目录不存在。请先 'pnpm build':" >&2
+if [ ! -d "admin-web/dist" ] || [ ! -d "emergency-web/dist" ] || [ ! -d "patient-app/dist" ]; then
+  echo "错误: 前端 dist 目录不存在。请先构建:" >&2
   echo "  cd admin-web && pnpm build && cd .." >&2
   echo "  cd emergency-web && pnpm build && cd .." >&2
+  echo "  cd patient-app && npx expo export --platform web && cd .." >&2
   exit 1
 fi
 
@@ -82,7 +83,7 @@ echo "  -> $TARBALL ($(du -h "$TARBALL" | cut -f1))"
 # ── 2. 准备远端目录 ────────────────────────────────────────────────────
 echo ""
 echo "[2/6] 准备远端目录..."
-ssh_cmd "mkdir -p $DEPLOY_DIR/admin-web $DEPLOY_DIR/emergency-web"
+ssh_cmd "mkdir -p $DEPLOY_DIR/admin-web $DEPLOY_DIR/emergency-web $DEPLOY_DIR/patient-app"
 
 # ── 3. 上传 + 解压源码 ──────────────────────────────────────────────────
 echo ""
@@ -93,9 +94,10 @@ ssh_cmd "cd $DEPLOY_DIR && tar -xzf /tmp/mental-chat-deploy.tar.gz && rm /tmp/me
 # ── 4. 上传前端 dist ────────────────────────────────────────────────────
 echo ""
 echo "[4/6] 上传前端构建产物..."
-ssh_cmd "rm -rf $DEPLOY_DIR/admin-web/dist $DEPLOY_DIR/emergency-web/dist"
+ssh_cmd "rm -rf $DEPLOY_DIR/admin-web/dist $DEPLOY_DIR/emergency-web/dist $DEPLOY_DIR/patient-app/dist"
 scp_to "admin-web/dist" "$DEPLOY_DIR/admin-web/"
 scp_to "emergency-web/dist" "$DEPLOY_DIR/emergency-web/"
+scp_to "patient-app/dist" "$DEPLOY_DIR/patient-app/"
 
 # ── 5. 重建并启动 docker compose ─────────────────────────────────────────
 echo ""
