@@ -12,9 +12,4 @@ export interface CrisisAlert {
   resolved_at: string | null
 }
 
-export interface PaginatedResponse<T> {
-  count: number
-  next: string | null
-  previous: string | null
-  results: T[]
-}
+export type { PaginatedResponse } from '@mental-chat/shared'

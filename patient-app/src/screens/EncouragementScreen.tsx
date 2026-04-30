@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useContext } from 'react';
+import React, { useState, useCallback, useContext } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   Platform,
   RefreshControl,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { AuthContext } from '../context/AuthContext';
 import {
   supporterAPI,
@@ -65,9 +66,10 @@ export default function EncouragementScreen() {
       if (isSupporter) {
         const res = await supporterAPI.getLinkedPatients();
         setLinks(res.data);
-        if (res.data.length > 0 && !selectedPatientId) {
-          setSelectedPatientId(res.data[0].patient.id);
-        }
+        setSelectedPatientId((prev) => {
+          if (prev && res.data.some((l) => l.patient.id === prev)) return prev;
+          return res.data.length > 0 ? res.data[0].patient.id : null;
+        });
       } else {
         const res = await encouragementAPI.list();
         setMessages(res.data);
@@ -77,11 +79,15 @@ export default function EncouragementScreen() {
     } finally {
       setLoading(false);
     }
-  }, [isSupporter, selectedPatientId]);
+  }, [isSupporter]);
 
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+  // Re-fetch every time this tab comes into focus, so newly linked patients
+  // (added on SupporterHome) appear without manual page refresh.
+  useFocusEffect(
+    useCallback(() => {
+      fetchData();
+    }, [fetchData]),
+  );
 
   const handleRefresh = async () => {
     setRefreshing(true);

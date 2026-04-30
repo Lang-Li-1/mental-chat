@@ -2,7 +2,9 @@ import json
 import logging
 import uuid
 
+import httpx
 import requests as http_requests
+from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.core.cache import cache
 from django.http import StreamingHttpResponse
@@ -449,92 +451,129 @@ def chat_message_feedback(request, message_id):
     return Response(ChatFeedbackSerializer(feedback).data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
 
-@api_view(["POST"])
-@permission_classes([permissions.IsAuthenticated])
-@throttle_classes([SendMessageThrottle])
-def send_message_stream(request):
-    """Send a message and stream the AI reply via SSE."""
-    serializer = SendMessageSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
+async def send_message_stream(request):
+    """Pure async Django view (NOT DRF) for true SSE streaming.
 
-    content = serializer.validated_data["content"]
-    session_id = serializer.validated_data.get("session_id") or uuid.uuid4()
+    Bypasses @api_view because DRF's response handling buffers the first
+    chunks of an async generator, adding ~10s latency before the first byte.
+    """
+    if request.method != "POST":
+        from django.http import HttpResponseNotAllowed
+        return HttpResponseNotAllowed(["POST"])
 
-    # Store user message
-    user_msg = ChatMessage.objects.create(
-        user=request.user, content=content,
-        is_ai_response=False, session_id=session_id,
-    )
+    # Manual JWT auth
+    from rest_framework_simplejwt.authentication import JWTAuthentication
+    from rest_framework.exceptions import AuthenticationFailed
+    from django.http import JsonResponse
 
-    # Crisis detection — async via Celery (Phase 2.2)
+    @sync_to_async
+    def _authenticate():
+        try:
+            return JWTAuthentication().authenticate(request)
+        except AuthenticationFailed:
+            return None
+
+    auth = await _authenticate()
+    if auth is None:
+        return JsonResponse({"detail": "Authentication required"}, status=401)
+    user, _token = auth
+
+    # Parse body
     try:
-        from .tasks import check_crisis_async
-        check_crisis_async.delay(request.user.id, content)
-    except Exception:
-        # Fallback: synchronous
+        data = json.loads(request.body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({"detail": "Invalid JSON"}, status=400)
+
+    content = (data.get("content") or "").strip()
+    if not content:
+        return JsonResponse({"detail": "content is required"}, status=400)
+    session_id = data.get("session_id") or uuid.uuid4()
+
+    @sync_to_async
+    def _create_user_msg():
+        msg = ChatMessage.objects.create(
+            user=user, content=content,
+            is_ai_response=False, session_id=session_id,
+        )
+        return msg, ChatMessageSerializer(msg).data
+
+    @sync_to_async
+    def _build_history():
+        return _build_chat_history(user, session_id)
+
+    @sync_to_async
+    def _persist_ai(text):
+        msg = ChatMessage.objects.create(
+            user=user, content=text or "...",
+            is_ai_response=True, session_id=session_id,
+        )
+        return ChatMessageSerializer(msg).data
+
+    user_msg, user_msg_payload = await _create_user_msg()
+    history = await _build_history()
+
+    # Crisis check fires-and-forgets in background — never block the stream.
+    # Celery's broker connection retry can take 20s when Redis is unavailable.
+    import asyncio
+    async def _crisis_check_bg():
         try:
             crisis_url = settings.AI_SERVICE_URL.rsplit("/", 1)[0] + "/crisis_check"
-            crisis_resp = http_requests.post(
-                crisis_url, json={"text": content}, timeout=5,
-            )
-            crisis_data = crisis_resp.json()
-            if crisis_data.get("is_crisis"):
-                CrisisAlert.objects.create(
-                    user=request.user, level=crisis_data.get("risk_level", "medium"),
-                    description=content,
-                )
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.post(crisis_url, json={"text": content})
+                data = r.json()
+            if data.get("is_crisis"):
+                @sync_to_async
+                def _create_alert():
+                    CrisisAlert.objects.create(
+                        user=user, level=data.get("risk_level", "medium"),
+                        description=content,
+                    )
+                await _create_alert()
         except Exception:
-            logger.warning("Crisis check failed (stream) for user %s", request.user.id)
+            logger.warning("Crisis check failed for user %s", user.id)
+    asyncio.create_task(_crisis_check_bg())
 
-    # Build history (shared helper)
-    history = _build_chat_history(request.user, session_id)
-
-    # Stream from AI service
     stream_url = settings.AI_SERVICE_URL.rsplit("/", 1)[0] + "/respond_stream"
 
-    def event_stream():
+    async def event_stream():
         full_reply = ""
-        # First, send user_message metadata
-        yield f"data: {json.dumps({'type': 'meta', 'user_message': ChatMessageSerializer(user_msg).data})}\n\n"
+        yield f"data: {json.dumps({'type': 'meta', 'user_message': user_msg_payload})}\n\n".encode("utf-8")
 
         try:
-            resp = http_requests.post(
-                stream_url,
-                json={"text": content, "history": history},
-                timeout=60,
-                stream=True,
-            )
-            for line in resp.iter_lines():
-                if not line:
-                    continue
-                line_str = line.decode("utf-8")
-                if line_str.startswith("data: "):
-                    payload = line_str[6:]
-                    if payload.strip() == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(payload)
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                async with client.stream(
+                    "POST", stream_url,
+                    json={"text": content, "history": history},
+                ) as resp:
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        payload = line[5:].lstrip()
+                        if payload == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(payload)
+                        except json.JSONDecodeError:
+                            continue
                         text_chunk = chunk.get("text", "")
                         if text_chunk:
                             full_reply += text_chunk
-                            yield f"data: {json.dumps({'type': 'delta', 'text': text_chunk})}\n\n"
-                    except json.JSONDecodeError:
-                        continue
+                            yield f"data: {json.dumps({'type': 'delta', 'text': text_chunk})}\n\n".encode("utf-8")
         except Exception:
-            logger.warning("Stream proxy failed for user %s", request.user.id)
+            logger.warning("Stream proxy failed for user %s", user.id)
             full_reply = full_reply or "抱歉，AI 服务暂时出现了问题，请稍后再试。"
 
-        # Persist the AI reply
-        ai_msg = ChatMessage.objects.create(
-            user=request.user, content=full_reply or "...",
-            is_ai_response=True, session_id=session_id,
-        )
-        yield f"data: {json.dumps({'type': 'done', 'ai_message': ChatMessageSerializer(ai_msg).data})}\n\n"
+        ai_payload = await _persist_ai(full_reply)
+        yield f"data: {json.dumps({'type': 'done', 'ai_message': ai_payload})}\n\n".encode("utf-8")
 
     response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
     response["Cache-Control"] = "no-cache"
     response["X-Accel-Buffering"] = "no"
     return response
+
+
+# Bypass CsrfViewMiddleware without wrapping the async view in a sync decorator.
+send_message_stream.csrf_exempt = True
 
 
 # ── Crisis alerts — Phase 1.3: authentication ─────────────────────────────────

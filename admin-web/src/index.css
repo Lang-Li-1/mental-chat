@@ -89,6 +89,32 @@ body {
   box-shadow: 0 0 0 3px rgba(74, 144, 217, 0.15);
 }
 
+.password-wrapper {
+  position: relative;
+}
+
+.password-wrapper input {
+  padding-right: 40px;
+}
+
+.password-toggle {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 4px 8px;
+  line-height: 1;
+  user-select: none;
+}
+
+.password-toggle:hover {
+  opacity: 0.7;
+}
+
 .error-message {
   background: #fdecea;
   color: var(--color-danger);

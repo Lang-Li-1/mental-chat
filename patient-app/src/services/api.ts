@@ -1,86 +1,30 @@
-import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  createApiClient,
+  type TokenStorage,
+  type PaginatedResponse,
+} from '@mental-chat/shared';
 import { API_BASE_URL } from '../config';
 
-// ── Axios instance with base URL and auth interceptor ───────────────────────
+const asyncStorageAdapter: TokenStorage = {
+  getItem: (key) => AsyncStorage.getItem(key),
+  setItem: (key, value) => AsyncStorage.setItem(key, value),
+  removeItem: (key) => AsyncStorage.removeItem(key),
+};
 
-const api = axios.create({
+const api = createApiClient({
   baseURL: API_BASE_URL,
   timeout: 30000,
-  headers: {
-    'Content-Type': 'application/json',
+  storage: asyncStorageAdapter,
+  accessTokenKey: 'access_token',
+  refreshTokenKey: 'refresh_token',
+  onAuthFailure: async () => {
+    await AsyncStorage.removeItem('user_info');
+    if (typeof window !== 'undefined' && window.location) {
+      window.location.reload();
+    }
   },
 });
-
-// Automatically attach JWT token to every request
-api.interceptors.request.use(
-  async (config) => {
-    const token = await AsyncStorage.getItem('access_token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error) => Promise.reject(error)
-);
-
-// Handle 401 — try refresh token first, then logout if that also fails
-let isRefreshing = false;
-let pendingRequests: Array<(token: string) => void> = [];
-
-api.interceptors.response.use(
-  (response) => response,
-  async (error) => {
-    const originalRequest = error.config;
-    if (error.response?.status === 401 && !originalRequest._retry) {
-      // If already refreshing, queue this request
-      if (isRefreshing) {
-        return new Promise((resolve) => {
-          pendingRequests.push((token: string) => {
-            originalRequest.headers.Authorization = `Bearer ${token}`;
-            resolve(api(originalRequest));
-          });
-        });
-      }
-
-      originalRequest._retry = true;
-      isRefreshing = true;
-
-      try {
-        const refreshToken = await AsyncStorage.getItem('refresh_token');
-        if (!refreshToken) throw new Error('No refresh token');
-
-        const { data } = await axios.post(`${API_BASE_URL}/api/auth/token/refresh`, {
-          refresh: refreshToken,
-        });
-
-        await AsyncStorage.setItem('access_token', data.access);
-        if (data.refresh) {
-          await AsyncStorage.setItem('refresh_token', data.refresh);
-        }
-
-        // Retry queued requests
-        pendingRequests.forEach((cb) => cb(data.access));
-        pendingRequests = [];
-
-        originalRequest.headers.Authorization = `Bearer ${data.access}`;
-        return api(originalRequest);
-      } catch {
-        // Refresh also failed — force logout
-        pendingRequests = [];
-        await AsyncStorage.removeItem('access_token');
-        await AsyncStorage.removeItem('refresh_token');
-        await AsyncStorage.removeItem('user_info');
-        if (typeof window !== 'undefined' && window.location) {
-          window.location.reload();
-        }
-      } finally {
-        isRefreshing = false;
-      }
-    }
-    return Promise.reject(error);
-  }
-);
 
 // ── Auth API ────────────────────────────────────────────────────────────────
 
@@ -141,13 +85,6 @@ export interface MoodEntry {
 export interface CreateMoodEntryRequest {
   mood_score: number;
   content: string;
-}
-
-interface PaginatedResponse<T> {
-  count: number;
-  next: string | null;
-  previous: string | null;
-  results: T[];
 }
 
 export const moodAPI = {

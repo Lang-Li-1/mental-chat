@@ -44,79 +44,60 @@ mental-chat/
 ### 一、安装依赖
 
 ```bash
-# 1. 后端依赖
-cd backend
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python manage.py migrate
-deactivate
+# 后端 + AI 服务（各自独立 venv）
+cd backend && python3 -m venv venv && source venv/bin/activate \
+  && pip install -r requirements.txt && python manage.py migrate && deactivate
+cd ../ai_service && python3 -m venv venv && source venv/bin/activate \
+  && pip install -r requirements.txt && deactivate
 
-# 2. AI 服务依赖
-cd ../ai_service
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-deactivate
-
-# 3. 前端依赖（在项目根目录执行）
-cd ..
-cd admin-web && pnpm install && cd ..
-cd emergency-web && pnpm install && cd ..
-cd patient-app && pnpm install && cd ..
-cd support-miniapp && pnpm install && cd ..
+# 前端（pnpm workspace，根目录一次装齐）
+cd .. && pnpm install
 ```
 
-### 二、启动全部服务
+### 二、必要的环境变量
 
-请依次在 **独立的终端窗口** 中执行以下命令：
+本地最少要设置这两个：
 
-**终端 1 — Django 后端（端口 8000）**
+| 变量 | 用途 | 设置位置 |
+|------|------|----------|
+| `DJANGO_DEBUG=true` | 后端走 SQLite + dev secret key + 全开 CORS | 启动后端时 export |
+| `AI_API_KEY=sk-...` | 通义千问 / DashScope API key | 启动 AI 服务时 export |
+
+无 `AI_API_KEY` 时 AI 服务会启动失败；无 `DJANGO_DEBUG=true` 时后端会要求生产用的 SECRET_KEY。
+
+### 三、启动各端
+
+根目录的 `package.json` 提供了 pnpm 快捷命令，每条**单开一个终端**：
+
 ```bash
-cd backend
-source venv/bin/activate
-python manage.py runserver 0.0.0.0:8000
-```
+# 终端 1 — Django 后端 :8000
+DJANGO_DEBUG=true pnpm dev:backend
 
-**终端 2 — Flask AI 服务（端口 5000）**
-```bash
-cd ai_service
-source venv/bin/activate
-python app.py
-```
+# 终端 2 — Flask AI 服务 :5000
+AI_API_KEY=<your_qwen_key> pnpm dev:ai
 
-**终端 3 — 后台管理 Web（端口 5173）**
-```bash
-cd admin-web
-pnpm dev
-```
+# 终端 3 — 管理端 :5173
+pnpm dev:admin
 
-**终端 4 — 紧急服务 Web（端口 5174）**
-```bash
-cd emergency-web
-pnpm dev --port 5174
-```
+# 终端 4 — 应急端 :5174（避开 5173）
+cd emergency-web && pnpm dev --port 5174
 
-**终端 5 — 患者 App（端口 8081）**
-```bash
-cd patient-app
-pnpm start
-```
+# 终端 5 — 患者 App（Expo）
+pnpm dev:patient            # 默认走 :8081，需扫码到手机
+# 或浏览器调试：
+cd patient-app && pnpm web   # http://localhost:8081
 
-**终端 6 — 支持者小程序**
-```bash
-cd support-miniapp
-pnpm dev:weapp
+# 终端 6 — 支持者小程序
+pnpm dev:miniapp
 # 编译后用微信开发者工具打开 dist 目录
 ```
 
-### 三、使用 Docker 启动后端服务（可选）
+### 四、Docker 部署（可选）
 
 ```bash
 cd ops/docker
 docker-compose up
-# Django 运行在 http://localhost:8000
-# Flask AI 运行在 http://localhost:5000
+# Django :8000 / Flask AI :5000 / Postgres / Redis 全套
 ```
 
 ---
@@ -125,27 +106,28 @@ docker-compose up
 
 | 服务 | 地址 | 说明 |
 |------|------|------|
-| Django 后端 | http://localhost:8000 | REST API |
-| Django 健康检查 | http://localhost:8000/health | 返回 `{"status": "ok"}` |
+| Django 后端 | http://localhost:8000 | REST API + WebSocket（Channels） |
 | Swagger 文档 | http://localhost:8000/api/docs/ | API 交互文档 |
-| Flask AI 服务 | http://localhost:5000 | AI 回复与危机检测 |
-| 后台管理 Web | http://localhost:5173 | 专业人员登录后使用 |
-| 紧急服务 Web | http://localhost:5174 | 实时危机警报监控面板 |
-| 患者 App (Expo) | http://localhost:8081 | 手机 Expo Go 扫码访问 |
+| Flask AI 服务 | http://localhost:5000 | Qwen 对话回复（含 SSE 流式 `/respond_stream`） |
+| 管理端 (React) | http://localhost:5173/admin-web/ | 管理员登录 |
+| 应急端 (Vue) | http://localhost:5174/emergency/ | 实时危机警报监控 |
+| 患者 App (Expo) | http://localhost:8081 | Expo Go 扫码 / 浏览器访问 |
+| WebSocket | ws://localhost:8000/ws/alerts/ | 危机告警实时推送 |
 
 ---
 
 ## 用户角色与权限
 
-系统定义了三种用户角色：
+系统定义了四种用户角色：
 
 | 角色 | 标识 | 可访问端 | 权限说明 |
 |------|------|----------|----------|
-| 患者 | `patient` | patient-app | 记录情绪、AI 对话、发送紧急求助 |
-| 专业人员 | `professional` | admin-web | 查看名下患者列表及其情绪记录 |
-| 支持者 | `supporter` | support-miniapp | 查看所支持患者的状态摘要（脱敏） |
+| 患者 | `patient` | patient-app | 记录情绪、AI 对话、紧急求助、PHQ-9/GAD-7 评估、康复任务 |
+| 专业人员 | `professional` | admin-web、emergency-web | 查看患者、处理危机告警 |
+| 支持者 | `supporter` | patient-app（守护者视角）、support-miniapp | 查看陪伴的患者状态、发送鼓励 |
+| 管理员 | `admin` | admin-web | 用户/数据管理、系统统计 |
 
-紧急服务 Web 不需要登录，直接展示所有活跃的危机警报。
+应急端的危机告警通过 WebSocket 实时推送（`/ws/alerts/`），不再轮询。
 
 ---
 
@@ -287,7 +269,10 @@ curl -X POST http://localhost:8000/api/mood_entries \
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
-| POST | `/api/chat/send_message` | 发送消息并获取 AI 回复 | JWT |
+| POST | `/api/chat/send_message` | 发送消息，一次性返回 AI 回复 | JWT |
+| POST | `/api/chat/send_message_stream` | 发送消息，**SSE 流式返回**（`text/event-stream`） | JWT |
+| GET | `/api/chat/sessions` | 列出当前用户的对话会话 | JWT |
+| GET | `/api/chat/sessions/{sid}/messages` | 获取指定会话的全部消息 | JWT |
 
 **发送消息：**
 ```bash

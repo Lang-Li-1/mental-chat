@@ -1,6 +1,6 @@
 import React, { useContext } from 'react';
+import { Text } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Ionicons } from '@expo/vector-icons';
 
 import { AuthContext } from '../context/AuthContext';
 import MoodScreen from '../screens/MoodScreen';
@@ -24,6 +24,12 @@ export type HomeTabParamList = {
 };
 
 const Tab = createBottomTabNavigator<HomeTabParamList>();
+
+const tabIcon = (emoji: string) => ({ focused }: { focused: boolean }) => (
+  <Text style={{ fontSize: focused ? 22 : 20, opacity: focused ? 1 : 0.65 }}>
+    {emoji}
+  </Text>
+);
 
 export default function HomeTabs() {
   const { userRole } = useContext(AuthContext);
@@ -72,9 +78,7 @@ export default function HomeTabs() {
             options={{
               title: '守护者中心',
               tabBarLabel: '天使状态',
-              tabBarIcon: ({ color, size }) => (
-                <Ionicons name="people-outline" size={size} color={color} />
-              ),
+              tabBarIcon: tabIcon('👥'),
             }}
           />
           <Tab.Screen
@@ -83,9 +87,7 @@ export default function HomeTabs() {
             options={{
               title: '守护者中心',
               tabBarLabel: '发送鼓励',
-              tabBarIcon: ({ color, size }) => (
-                <Ionicons name="heart-outline" size={size} color={color} />
-              ),
+              tabBarIcon: tabIcon('💝'),
             }}
           />
           <Tab.Screen
@@ -94,9 +96,7 @@ export default function HomeTabs() {
             options={{
               title: '守护者中心',
               tabBarLabel: '个人中心',
-              tabBarIcon: ({ color, size }) => (
-                <Ionicons name="person-outline" size={size} color={color} />
-              ),
+              tabBarIcon: tabIcon('👤'),
             }}
           />
         </>
@@ -108,9 +108,7 @@ export default function HomeTabs() {
             options={{
               title: '心理守护',
               tabBarLabel: '情绪记录',
-              tabBarIcon: ({ color, size }) => (
-                <Ionicons name="heart-outline" size={size} color={color} />
-              ),
+              tabBarIcon: tabIcon('💚'),
             }}
           />
           <Tab.Screen
@@ -119,9 +117,7 @@ export default function HomeTabs() {
             options={{
               headerShown: false,
               tabBarLabel: 'AI对话',
-              tabBarIcon: ({ color, size }) => (
-                <Ionicons name="chatbubble-ellipses-outline" size={size} color={color} />
-              ),
+              tabBarIcon: tabIcon('💬'),
             }}
           />
           <Tab.Screen
@@ -130,9 +126,7 @@ export default function HomeTabs() {
             options={{
               title: '心理守护',
               tabBarLabel: '今日计划',
-              tabBarIcon: ({ color, size }) => (
-                <Ionicons name="trophy-outline" size={size} color={color} />
-              ),
+              tabBarIcon: tabIcon('🏆'),
             }}
           />
           <Tab.Screen
@@ -141,9 +135,7 @@ export default function HomeTabs() {
             options={{
               title: '心理守护',
               tabBarLabel: '科普阅读',
-              tabBarIcon: ({ color, size }) => (
-                <Ionicons name="book-outline" size={size} color={color} />
-              ),
+              tabBarIcon: tabIcon('📖'),
             }}
           />
           <Tab.Screen
@@ -152,9 +144,7 @@ export default function HomeTabs() {
             options={{
               title: '心理守护',
               tabBarLabel: '个人中心',
-              tabBarIcon: ({ color, size }) => (
-                <Ionicons name="person-outline" size={size} color={color} />
-              ),
+              tabBarIcon: tabIcon('👤'),
             }}
           />
         </>

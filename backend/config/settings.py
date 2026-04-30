@@ -204,6 +204,8 @@ CORS_ALLOW_CREDENTIALS = True
 # ---------------------------------------------------------------------------
 
 if not DEBUG:
+
+
     # Only enable SSL redirect when running behind HTTPS (set SECURE_SSL=true in env)
     if os.environ.get("SECURE_SSL", "false").lower() in ("true", "1", "yes"):
         SECURE_HSTS_SECONDS = 31536000

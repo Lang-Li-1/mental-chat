@@ -14,12 +14,7 @@ export interface PatientAssignment {
   created_at: string;
 }
 
-export interface PaginatedResponse<T> {
-  count: number;
-  next: string | null;
-  previous: string | null;
-  results: T[];
-}
+export type { PaginatedResponse } from '@mental-chat/shared';
 
 export interface MoodEntry {
   id: number;

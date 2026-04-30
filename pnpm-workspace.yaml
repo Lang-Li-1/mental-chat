@@ -1,0 +1,13 @@
+packages:
+  - 'admin-web'
+  - 'emergency-web'
+  - 'patient-app'
+  - 'packages/*'
+
+catalog:
+  axios: ^1.7.9
+  typescript: ^5.6.3
+  vite: ^6.0.5
+
+onlyBuiltDependencies:
+  - esbuild

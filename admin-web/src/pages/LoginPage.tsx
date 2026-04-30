@@ -7,6 +7,7 @@ function LoginPage() {
   const navigate = useNavigate();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -71,14 +72,25 @@ function LoginPage() {
 
           <div className="form-group">
             <label htmlFor="password">密码</label>
-            <input
-              id="password"
-              type="password"
-              placeholder="请输入密码"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-            />
+            <div className="password-wrapper">
+              <input
+                id="password"
+                type={showPassword ? 'text' : 'password'}
+                placeholder="请输入密码"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+              <button
+                type="button"
+                className="password-toggle"
+                onClick={() => setShowPassword((v) => !v)}
+                aria-label={showPassword ? '隐藏密码' : '显示密码'}
+                tabIndex={-1}
+              >
+                {showPassword ? '🙈' : '👁️'}
+              </button>
+            </div>
           </div>
 
           <button type="submit" className="btn btn-primary" disabled={loading}>
