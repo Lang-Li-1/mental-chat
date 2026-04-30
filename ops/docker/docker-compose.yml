@@ -3,10 +3,12 @@ version: "3.8"
 services:
   postgres:
     image: postgres:16-alpine
+    env_file:
+      - ../../.env
     environment:
-      POSTGRES_DB: mental_chat
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ***
+      POSTGRES_DB: ${DB_NAME:-mental_chat}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
@@ -39,16 +41,6 @@ services:
       - ../../.env
     environment:
       - DJANGO_SETTINGS_MODULE=config.settings
-      - DB_ENGINE=django.db.backends.postgresql
-      - DB_NAME=mental_chat
-      - DB_USER=postgres
-      - DB_PASSWORD=***
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - REDIS_URL=redis://redis:6379/0
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - AI_SERVICE_URL=http://ai_service:5000/respond
     command: >
       sh -c "python manage.py migrate --noinput &&
              daphne -b 0.0.0.0 -p 8000 config.asgi:application"
@@ -76,13 +68,6 @@ services:
       - ../../.env
     environment:
       - DJANGO_SETTINGS_MODULE=config.settings
-      - DB_ENGINE=django.db.backends.postgresql
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - REDIS_URL=redis://redis:6379/0
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - AI_SERVICE_URL=http://ai_service:5000/respond
     depends_on:
       postgres:
         condition: service_healthy
