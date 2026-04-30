@@ -90,7 +90,7 @@ export default function LoginScreen() {
     <View style={styles.outerContainer}>
       <KeyboardAvoidingView
         style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <ScrollView
           contentContainerStyle={styles.scrollContent}

@@ -26,7 +26,6 @@
         "READ_CONTACTS",
         "RECORD_AUDIO"
       ],
-      "softwareKeyboardLayoutMode": "pan",
       "usesCleartextTraffic": true
     },
     "plugins": [
