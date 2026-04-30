@@ -1,149 +1,128 @@
 #!/bin/bash
+# 心理守护平台 - 自动部署脚本
+# 用法:
+#   SERVER_PASS='your_password' ./deploy-auto.sh
+#   或不带 env 变量直接跑，会交互式提示输入密码
 set -e
 
-# 心理守护平台 - 自动部署脚本（使用密码认证）
 SERVER_IP="47.239.219.238"
 SERVER_USER="root"
-SERVER_PASS="***"
 DEPLOY_DIR="/opt/mental-chat"
+TARBALL="/tmp/mental-chat-deploy.tar.gz"
 
-echo "========================================="
-echo "心理守护平台 - 自动部署"
-echo "服务器: $SERVER_IP"
-echo "========================================="
-
-# 检查前端构建文件
-if [ ! -d "admin-web/dist" ] || [ ! -d "emergency-web/dist" ]; then
-    echo "错误: 前端构建文件不存在，请先运行构建命令"
-    exit 1
+# ── 取密码 ──────────────────────────────────────────────────────────────
+if [ -z "${SERVER_PASS:-}" ]; then
+  read -s -p "Server root password: " SERVER_PASS
+  echo
+fi
+if [ -z "$SERVER_PASS" ]; then
+  echo "错误: 没有提供密码。" >&2
+  exit 1
 fi
 
-# 使用expect自动输入密码
-deploy_with_password() {
-    expect << EOF
-set timeout 300
-spawn ssh $SERVER_USER@$SERVER_IP "$1"
-expect {
-    "password:" {
-        send "$SERVER_PASS\r"
-        exp_continue
+# ── 依赖检查 ────────────────────────────────────────────────────────────
+command -v expect >/dev/null || { echo "错误: 需要 expect (brew install expect)" >&2; exit 1; }
+
+if [ ! -d "admin-web/dist" ] || [ ! -d "emergency-web/dist" ]; then
+  echo "错误: 前端 dist 目录不存在。请先 'pnpm build':" >&2
+  echo "  cd admin-web && pnpm build && cd .." >&2
+  echo "  cd emergency-web && pnpm build && cd .." >&2
+  exit 1
+fi
+
+# ── 通用 ssh / scp 包装 ─────────────────────────────────────────────────
+ssh_cmd() {
+  expect -c "
+    set timeout 600
+    spawn ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP \"$1\"
+    expect {
+      \"password:\" { send \"$SERVER_PASS\r\"; exp_continue }
+      eof
     }
-    eof
-}
-EOF
+  " >&2
 }
 
-# 1. 创建部署目录
+scp_to() {
+  expect -c "
+    set timeout 600
+    spawn scp -r -o StrictHostKeyChecking=no $1 $SERVER_USER@$SERVER_IP:$2
+    expect {
+      \"password:\" { send \"$SERVER_PASS\r\"; exp_continue }
+      eof
+    }
+  " >&2
+}
+
+# ── Trap: 退出时清理本地 tarball ────────────────────────────────────────
+trap 'rm -f "$TARBALL"' EXIT
+
+echo "========================================="
+echo "心理守护平台 - 部署到 $SERVER_IP"
+echo "========================================="
+
+# ── 1. 打包源码（剔除 venv / cache / 数据库等）──────────────────────────
 echo ""
-echo "[1/7] 创建部署目录..."
-deploy_with_password "mkdir -p $DEPLOY_DIR/{backend,ai_service,ops/docker,admin-web,emergency-web}"
+echo "[1/6] 打包源码..."
+tar -czf "$TARBALL" \
+  --exclude='backend/venv' \
+  --exclude='backend/__pycache__' \
+  --exclude='backend/api/__pycache__' \
+  --exclude='backend/api/migrations/__pycache__' \
+  --exclude='backend/config/__pycache__' \
+  --exclude='backend/db.sqlite3' \
+  --exclude='backend/staticfiles' \
+  --exclude='backend/*.log' \
+  --exclude='ai_service/venv' \
+  --exclude='ai_service/__pycache__' \
+  --exclude='node_modules' \
+  --exclude='*.pyc' \
+  backend ai_service ops/docker .env
+echo "  -> $TARBALL ($(du -h "$TARBALL" | cut -f1))"
 
-# 2. 上传后端代码
+# ── 2. 准备远端目录 ────────────────────────────────────────────────────
 echo ""
-echo "[2/7] 上传后端代码..."
-expect << EOF
-set timeout 300
-spawn scp -r backend $SERVER_USER@$SERVER_IP:$DEPLOY_DIR/
-expect "password:"
-send "$SERVER_PASS\r"
-expect eof
-EOF
+echo "[2/6] 准备远端目录..."
+ssh_cmd "mkdir -p $DEPLOY_DIR/admin-web $DEPLOY_DIR/emergency-web"
 
-# 3. 上传AI服务代码
+# ── 3. 上传 + 解压源码 ──────────────────────────────────────────────────
 echo ""
-echo "[3/7] 上传AI服务代码..."
-expect << EOF
-set timeout 300
-spawn scp -r ai_service $SERVER_USER@$SERVER_IP:$DEPLOY_DIR/
-expect "password:"
-send "$SERVER_PASS\r"
-expect eof
-EOF
+echo "[3/6] 上传源码..."
+scp_to "$TARBALL" "/tmp/"
+ssh_cmd "cd $DEPLOY_DIR && tar -xzf /tmp/mental-chat-deploy.tar.gz && rm /tmp/mental-chat-deploy.tar.gz"
 
-# 4. 上传Docker配置
+# ── 4. 上传前端 dist ────────────────────────────────────────────────────
 echo ""
-echo "[4/7] 上传Docker配置..."
-expect << EOF
-set timeout 300
-spawn scp -r ops/docker $SERVER_USER@$SERVER_IP:$DEPLOY_DIR/ops/
-expect "password:"
-send "$SERVER_PASS\r"
-expect eof
-EOF
+echo "[4/6] 上传前端构建产物..."
+ssh_cmd "rm -rf $DEPLOY_DIR/admin-web/dist $DEPLOY_DIR/emergency-web/dist"
+scp_to "admin-web/dist" "$DEPLOY_DIR/admin-web/"
+scp_to "emergency-web/dist" "$DEPLOY_DIR/emergency-web/"
 
-# 5. 上传环境配置
+# ── 5. 重建并启动 docker compose ─────────────────────────────────────────
 echo ""
-echo "[5/7] 上传环境配置..."
-expect << EOF
-set timeout 300
-spawn scp .env $SERVER_USER@$SERVER_IP:$DEPLOY_DIR/
-expect "password:"
-send "$SERVER_PASS\r"
-expect eof
-EOF
+echo "[5/6] 重建 docker 容器..."
+ssh_cmd "cd $DEPLOY_DIR/ops/docker && docker-compose down && docker-compose up -d --build 2>&1 | tail -30"
 
-# 6. 上传前端构建文件
+# ── 6. 健康检查 ────────────────────────────────────────────────────────
 echo ""
-echo "[6/7] 上传前端构建文件..."
-expect << EOF
-set timeout 300
-spawn scp -r admin-web/dist $SERVER_USER@$SERVER_IP:$DEPLOY_DIR/admin-web/
-expect "password:"
-send "$SERVER_PASS\r"
-expect eof
-EOF
+echo "[6/6] 等待服务启动..."
+sleep 25
 
-expect << EOF
-set timeout 300
-spawn scp -r emergency-web/dist $SERVER_USER@$SERVER_IP:$DEPLOY_DIR/emergency-web/
-expect "password:"
-send "$SERVER_PASS\r"
-expect eof
-EOF
-
-# 7. 在服务器上执行部署
 echo ""
-echo "[7/7] 在服务器上启动服务..."
-expect << 'EOF'
-set timeout 600
-spawn ssh root@47.239.219.238
-expect "password:"
-send "***\r"
-expect "# "
+echo "容器状态:"
+ssh_cmd "docker ps --format 'table {{.Names}}\t{{.Status}}'"
 
-# 安装Docker
-send "if ! command -v docker &> /dev/null; then curl -fsSL https://get.docker.com | sh && systemctl start docker && systemctl enable docker; fi\r"
-expect "# "
-
-# 安装Docker Compose
-send "if ! command -v docker-compose &> /dev/null; then curl -L \"https://github.com/docker/compose/releases/latest/download/docker-compose-\$(uname -s)-\$(uname -m)\" -o /usr/local/bin/docker-compose && chmod +x /usr/local/bin/docker-compose; fi\r"
-expect "# "
-
-# 启动服务
-send "cd /opt/mental-chat/ops/docker && docker-compose down && docker-compose up -d --build\r"
-expect "# "
-
-# 配置防火墙
-send "if command -v ufw &> /dev/null; then ufw allow 80/tcp && ufw allow 443/tcp && ufw allow 8000/tcp && ufw allow 5000/tcp; fi\r"
-expect "# "
-
-# 安装Nginx
-send "if ! command -v nginx &> /dev/null; then apt-get update && apt-get install -y nginx || yum install -y nginx; fi\r"
-expect "# "
-
-send "exit\r"
-expect eof
-EOF
+echo ""
+echo "健康检查:"
+for path in "/health" "/api/docs/" "/admin-web/" "/emergency/"; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "http://$SERVER_IP$path" || echo 000)
+  printf "  %-22s %s\n" "$path" "$code"
+done
 
 echo ""
 echo "========================================="
-echo "部署完成！"
+echo "部署完成"
+echo "  患者端:   http://$SERVER_IP/"
+echo "  管理端:   http://$SERVER_IP/admin-web/"
+echo "  应急端:   http://$SERVER_IP/emergency/"
+echo "  API 文档: http://$SERVER_IP/api/docs/"
 echo "========================================="
-echo ""
-echo "访问地址："
-echo "  后端API: http://47.239.219.238:8000"
-echo "  健康检查: http://47.239.219.238:8000/health"
-echo "  API文档: http://47.239.219.238:8000/api/docs/"
-echo ""
-echo "前端需要配置Nginx后访问"
-echo ""
