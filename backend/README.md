@@ -43,7 +43,8 @@ DJANGO_DEBUG=true python manage.py runserver 0.0.0.0:8000
 |------|------|------|------|
 | GET | `/health` | 否 | 健康检查 |
 | GET | `/api/docs/` | 否 | Swagger UI |
-| POST | `/api/auth/register` | 否 | 注册 |
+| POST | `/api/auth/register` | 否 | 注册（仅 patient/supporter；其他角色被 400 拒绝） |
+| POST | `/api/auth/register_professional` | 否 | 医生自助注册，role 强制 professional，自动登录 |
 | POST | `/api/auth/login` | 否 | 登录，返回 access/refresh JWT |
 | POST | `/api/auth/token/refresh` | 否 | 刷新 access token |
 | GET | `/api/users/me` | 是 | 当前用户信息 |
@@ -52,19 +53,27 @@ DJANGO_DEBUG=true python manage.py runserver 0.0.0.0:8000
 | POST | `/api/chat/send_message` | 是 | 发消息，一次性返回 AI 回复 |
 | POST | `/api/chat/send_message_stream` | 是 | 发消息，SSE 流式返回 |
 | GET | `/api/chat/sessions` | 是 | 列出对话会话 |
+| GET | `/api/chat/conversation/<peer_id>` | 是 | 天使↔守护者私聊历史，返回时把对方发的消息标已读 |
+| POST | `/api/chat/conversation/<peer_id>/send` | 是 | 私聊发消息（HTTP 兜底，主链路走 WebSocket） |
 | POST | `/api/crisis_alerts` | 否 | 创建危机告警 |
 | GET | `/api/crisis_alerts/active` | 是（professional/admin） | 活跃告警列表 |
 | GET | `/api/patients` | 是（professional） | 名下患者列表 |
+| GET | `/api/patient/linked_supporters` | 是（patient） | 当前天使关联的守护者列表 |
+| GET | `/api/supporter/linked_patients` | 是（supporter/professional） | 当前守护者/医生关联的天使列表 |
 | GET | `/api/assessments` | 是 | PHQ-9 / GAD-7 测评结果 |
 | GET | `/api/recovery/tasks` | 是 | 康复任务 |
 | GET | `/api/articles` | 是 | 心理科普文章 |
 | GET | `/api/admin/stats` | 是（admin） | 后台统计数据 |
+| GET | `/api/admin/users` | 是（admin） | 用户列表（支持 role/search 过滤） |
+| POST | `/api/admin/users` | 是（admin） | 新建管理员或医生（admin/professional），密码 ≥ 8 位 |
+| PATCH | `/api/admin/users/<id>` | 是（admin） | 切换 is_active 或修改 role |
 
 ## WebSocket
 
 | 路径 | 用途 |
 |------|------|
 | `/ws/alerts/` | 危机告警实时推送（应急端订阅） |
+| `/ws/chat/<peer_id>/?token=<jwt_access>` | 天使↔守护者双向聊天。token 走 query string；连接时校验 SupporterLink（任一方向有关联即可），房间名按 `chat_<min(uid,peer)>_<max>` 生成。失败 close code：4400 参数错 / 4401 无效 token / 4403 未关联。 |
 
 ## Celery 任务
 

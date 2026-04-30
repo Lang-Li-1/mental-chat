@@ -122,12 +122,17 @@ docker-compose up
 
 | 角色 | 标识 | 可访问端 | 权限说明 |
 |------|------|----------|----------|
-| 患者 | `patient` | patient-app | 记录情绪、AI 对话、紧急求助、PHQ-9/GAD-7 评估、康复任务 |
-| 专业人员 | `professional` | admin-web、emergency-web | 查看患者、处理危机告警 |
-| 支持者 | `supporter` | patient-app（守护者视角）、support-miniapp | 查看陪伴的患者状态、发送鼓励 |
-| 管理员 | `admin` | admin-web | 用户/数据管理、系统统计 |
+| 患者（天使） | `patient` | patient-app（根路径 `/`） | 记录情绪、AI 对话、紧急求助、PHQ-9/GAD-7 评估、康复任务、和守护者私聊 |
+| 专业人员（医生） | `professional` | admin-web、emergency-web | 查看患者、处理危机告警；admin-web 登录页支持自助注册 |
+| 支持者（守护者） | `supporter` | patient-app（守护者视角，路径 `/supporter/...`）、support-miniapp | 关联天使、查看脱敏状态摘要、和天使私聊 |
+| 管理员 | `admin` | admin-web | 用户/数据管理、系统统计、新建管理员/医生账号 |
 
-应急端的危机告警通过 WebSocket 实时推送（`/ws/alerts/`），不再轮询。
+**注册路径有三条**：
+1. **患者 / 守护者** 自助 → `POST /api/auth/register`（公共端点，role 仅允许 `patient`/`supporter`）
+2. **医生** 自助 → `POST /api/auth/register_professional`（公共端点，role 强制 `professional`）
+3. **管理员** 必须由现有管理员手动新建 → `POST /api/admin/users`（admin-web 用户管理页"+ 新增管理员/医生"按钮）
+
+应急端的危机告警通过 WebSocket 实时推送（`/ws/alerts/`）。天使和守护者间的双向聊天走 `/ws/chat/<peer_id>/?token=<jwt>`，断网时回落到 HTTP `/api/chat/conversation/...`。
 
 ---
 
@@ -135,10 +140,12 @@ docker-compose up
 
 ### 1. 患者 App（patient-app）
 
+> 同一份代码同时承担"天使"和"守护者"两套界面，登录后根据 role 切换 Tab Navigator 和 URL 前缀（守护者所有路径自动加 `/supporter/`）。
+
 **注册账号**
 1. 打开 App，在登录页面点击 **"注册"** 切换到注册模式
-2. 填写用户名、邮箱、密码，角色自动设为 `patient`
-3. 点击注册，成功后自动登录进入主界面
+2. 填写用户名、邮箱、密码；底部"角色"切换选择 **天使** 或 **守护者**
+3. 点击注册，成功后自动登录进入对应主界面
 
 **情绪记录（Tab 1）**
 1. 选择心情分数（1-10），1 为最差，10 为最好
@@ -158,16 +165,32 @@ docker-compose up
 3. 系统会向后端发送危机告警，紧急服务端会实时显示
 4. 发送成功后会提示心理援助热线号码
 
-**个人中心（Tab 3）**
+**与守护者私聊（"守护者" Tab）**
+- Tab 内顶部下拉切换聊天对象（已关联的守护者）
+- 主链路 WebSocket（`/ws/chat/<peer_id>/?token=...`）实时收发，断网自动回落到 HTTP
+- 进入会话页时，对方发来的未读消息自动标记已读
+
+**个人中心（Tab）**
 - 查看个人信息（用户名、邮箱、注册时间等）
 - 点击 **"退出登录"** 注销并返回登录页
+- 守护者鼓励消息已并入"守护者"私聊页，个人中心不再单独展示
+
+**守护者视角主要功能**
+- **天使状态**：关联天使（用户名/手机号），查看脱敏的情绪摘要、对话计数、活跃告警
+- **发送鼓励 / 私聊**：和已关联的天使双向聊天
 
 ### 2. 后台管理 Web（admin-web）
 
 **登录**
-1. 浏览器打开 http://localhost:5173
-2. 使用 `professional` 角色账号登录（用户名 + 密码）
-3. 登录成功后跳转到管理仪表盘
+1. 浏览器打开 http://localhost:5173/admin-web/
+2. 已有账号：直接用用户名 + 密码登录
+3. 没账号且是医生：点击底部 **"我是医生，我要创建账号"** 切换到注册模式，填用户名/密码（≥8位）/邮箱或手机号（至少一项），注册成功自动登录
+4. 登录成功后跳转到管理仪表盘
+
+**新建管理员或医生（管理员专属）**
+1. 进入 **用户管理** 页面
+2. 右上角点击 **"+ 新增管理员/医生"** 按钮
+3. 弹层选角色（医生 / 管理员）→ 填用户名、密码（≥8位）、邮箱、手机号 → 创建
 
 **查看患者列表**
 - 登录后首页展示分配给当前专业人员的患者列表
@@ -215,15 +238,26 @@ docker-compose up
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
-| POST | `/api/auth/register` | 用户注册 | 无 |
+| POST | `/api/auth/register` | 公共注册（仅 `patient` / `supporter`） | 无 |
+| POST | `/api/auth/register_professional` | 医生自助注册，role 强制 `professional` | 无 |
 | POST | `/api/auth/login` | 用户登录，返回 JWT | 无 |
 | GET | `/api/users/me` | 获取当前用户信息 | JWT |
+| POST | `/api/admin/users` | 管理员新建管理员或医生账号 | JWT (admin) |
 
-**注册请求示例：**
+**患者注册示例：**
 ```bash
 curl -X POST http://localhost:8000/api/auth/register \
   -H "Content-Type: application/json" \
   -d '{"username":"testuser","email":"test@example.com","password":"MyPass123","role":"patient"}'
+# role 字段只接受 patient/supporter，传 admin/professional 会返回 400
+```
+
+**医生自助注册示例：**
+```bash
+curl -X POST http://localhost:8000/api/auth/register_professional \
+  -H "Content-Type: application/json" \
+  -d '{"username":"doctor_new","email":"doctor@example.com","password":"DocPass1234"}'
+# 返回包含 access/refresh token，可直接登录后台
 ```
 
 **登录请求示例：**
@@ -322,6 +356,16 @@ curl -X POST http://localhost:8000/api/crisis_alerts \
 |------|------|------|------|
 | GET | `/api/patients` | 获取名下患者列表（仅专业人员） | JWT |
 | GET | `/api/patients/{id}/status_summary` | 获取患者状态摘要 | JWT |
+
+### 天使 ↔ 守护者私聊
+
+| 方法 | 路径 | 说明 | 认证 |
+|------|------|------|------|
+| WS | `/ws/chat/<peer_id>/?token=<jwt_access>` | 双向实时聊天主链路；连接时校验 SupporterLink，房间名按用户对生成 | token |
+| GET | `/api/chat/conversation/<peer_id>` | 拉取私聊历史（最近 200 条），并把对方发的消息标记已读 | JWT |
+| POST | `/api/chat/conversation/<peer_id>/send` | HTTP 兜底发送（WebSocket 断开时使用） | JWT |
+| GET | `/api/patient/linked_supporters` | 当前天使关联的守护者列表 | JWT (patient) |
+| GET | `/api/supporter/linked_patients` | 当前守护者关联的天使列表（医生看到的是分配关系） | JWT |
 
 ### AI 服务直接接口
 
@@ -426,6 +470,22 @@ const BASE_URL = 'http://localhost:8000';
 AI_SERVICE_URL = 'http://localhost:5000/respond'  # Flask AI 服务地址
 AI_SERVICE_TIMEOUT = 30                            # 请求超时时间（秒）
 ```
+
+---
+
+## APK 打包（患者 App）
+
+`patient-app/eas.json` 已经定义 `preview` profile，输出 APK；`src/config.ts` 自动按 `__DEV__` 切换 dev/prod API 地址（release 包指向 `http://47.239.219.238`）。
+
+```bash
+cd patient-app
+eas login                                            # 第一次需要登录 Expo 账号
+eas build --platform android --profile preview       # 排队 + 云端构建（首次 8–15 分钟）
+# 完成后 CLI 输出 APK 下载链接，发到安卓手机浏览器打开即可安装
+# （首次安装需在系统设置里允许"未知来源"）
+```
+
+⚠️ **当前线上是 HTTP**（无 HTTPS 证书），`app.json` 里设了 `android.usesCleartextTraffic: true` 让 release APK 能连。后续上 HTTPS 后应当移除这个开关。iOS App 上架同理需要 ATS 例外或直接 HTTPS。
 
 ---
 
