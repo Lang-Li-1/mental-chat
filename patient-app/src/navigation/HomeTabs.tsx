@@ -139,6 +139,15 @@ export default function HomeTabs() {
             }}
           />
           <Tab.Screen
+            name="Encouragement"
+            component={EncouragementScreen}
+            options={{
+              title: '守护者聊天',
+              tabBarLabel: '守护者',
+              tabBarIcon: tabIcon('💝'),
+            }}
+          />
+          <Tab.Screen
             name="Profile"
             component={ProfileScreen}
             options={{

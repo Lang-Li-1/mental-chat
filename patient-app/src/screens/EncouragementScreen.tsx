@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useContext } from 'react';
+import React, { useState, useCallback, useContext, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,441 +7,421 @@ import {
   StyleSheet,
   ScrollView,
   ActivityIndicator,
-  Alert,
   Platform,
-  RefreshControl,
+  KeyboardAvoidingView,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import { AuthContext } from '../context/AuthContext';
 import {
   supporterAPI,
-  encouragementAPI,
+  patientAPI,
   SupporterLink,
   EncouragementMessage,
+  UserInfo,
 } from '../services/api';
+import { usePeerChat } from '../hooks/usePeerChat';
 
-function showAlert(title: string, message: string) {
-  if (Platform.OS === 'web') {
-    window.alert(`${title}: ${message}`);
-  } else {
-    Alert.alert(title, message);
-  }
+interface PeerOption {
+  id: number;
+  name: string;
 }
 
-function formatDate(dateStr: string): string {
+function formatTime(dateStr: string): string {
   const d = new Date(dateStr);
-  const month = d.getMonth() + 1;
-  const day = d.getDate();
-  const hours = d.getHours().toString().padStart(2, '0');
-  const minutes = d.getMinutes().toString().padStart(2, '0');
-  return `${month}月${day}日 ${hours}:${minutes}`;
+  const hh = d.getHours().toString().padStart(2, '0');
+  const mm = d.getMinutes().toString().padStart(2, '0');
+  return `${hh}:${mm}`;
 }
 
-const PRESET_MESSAGES = [
+const PRESETS = [
   '你很棒，一切都会好起来的！',
-  '我一直在你身边，有什么需要随时告诉我。',
-  '今天辛苦了，好好休息吧。',
-  '你比自己想象的更强大！',
-  '不管遇到什么，我们一起面对。',
-  '每一天都是新的开始，加油！',
+  '我一直在你身边。',
+  '今天辛苦了，好好休息。',
+  '你比想象的更强大！',
 ];
 
 export default function EncouragementScreen() {
   const { userRole } = useContext(AuthContext);
   const isSupporter = userRole === 'supporter';
+  const accentColor = isSupporter ? '#5A6FC2' : '#5DA480';
+  const accentBg = isSupporter ? '#EEF1F9' : '#EEF6F1';
 
-  // Supporter: send mode
-  const [links, setLinks] = useState<SupporterLink[]>([]);
-  const [selectedPatientId, setSelectedPatientId] = useState<number | null>(null);
-  const [customMessage, setCustomMessage] = useState('');
-  const [sending, setSending] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [peers, setPeers] = useState<PeerOption[]>([]);
+  const [selectedPeerId, setSelectedPeerId] = useState<number | null>(null);
+  const [loadingPeers, setLoadingPeers] = useState(true);
+  const [draft, setDraft] = useState('');
+  const [meId, setMeId] = useState<number | null>(null);
 
-  // Patient: receive mode
-  const [messages, setMessages] = useState<EncouragementMessage[]>([]);
-  const [refreshing, setRefreshing] = useState(false);
+  const { messages, status, loading: loadingHistory, send } = usePeerChat(selectedPeerId);
 
-  const fetchData = useCallback(async () => {
+  // Read current user id from storage so we can render bubbles left/right
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem('user_info');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (typeof parsed?.id === 'number') setMeId(parsed.id);
+        }
+      } catch {}
+    })();
+  }, []);
+
+  const fetchPeers = useCallback(async () => {
+    setLoadingPeers(true);
     try {
-      if (isSupporter) {
-        const res = await supporterAPI.getLinkedPatients();
-        setLinks(res.data);
-        setSelectedPatientId((prev) => {
-          if (prev && res.data.some((l) => l.patient.id === prev)) return prev;
-          return res.data.length > 0 ? res.data[0].patient.id : null;
-        });
-      } else {
-        const res = await encouragementAPI.list();
-        setMessages(res.data);
-      }
-    } catch (err) {
-      console.error('Failed to fetch data', err);
+      const res = isSupporter
+        ? await supporterAPI.getLinkedPatients()
+        : await patientAPI.getLinkedSupporters();
+      const opts: PeerOption[] = res.data.map((link: SupporterLink) => {
+        const peer: UserInfo = isSupporter ? link.patient : link.supporter;
+        return { id: peer.id, name: peer.username };
+      });
+      setPeers(opts);
+      setSelectedPeerId((prev) => {
+        if (prev != null && opts.some((o) => o.id === prev)) return prev;
+        return opts.length > 0 ? opts[0].id : null;
+      });
+    } catch (e) {
+      console.error('Failed to load peers', e);
     } finally {
-      setLoading(false);
+      setLoadingPeers(false);
     }
   }, [isSupporter]);
 
-  // Re-fetch every time this tab comes into focus, so newly linked patients
-  // (added on SupporterHome) appear without manual page refresh.
   useFocusEffect(
     useCallback(() => {
-      fetchData();
-    }, [fetchData]),
+      fetchPeers();
+    }, [fetchPeers]),
   );
 
-  const handleRefresh = async () => {
-    setRefreshing(true);
-    await fetchData();
-    setRefreshing(false);
+  const scrollRef = useRef<ScrollView>(null);
+  useEffect(() => {
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
+  }, [messages.length]);
+
+  const handleSend = (content: string) => {
+    if (!content.trim() || selectedPeerId == null) return;
+    send(content);
+    setDraft('');
   };
 
-  const handleSend = async (content: string) => {
-    if (!selectedPatientId) {
-      showAlert('提示', '请先选择一位天使');
-      return;
-    }
-    if (!content.trim()) {
-      showAlert('提示', '请输入鼓励消息');
-      return;
-    }
-    setSending(true);
-    try {
-      await supporterAPI.sendEncouragement(selectedPatientId, content.trim());
-      showAlert('发送成功', '您的鼓励已送达！');
-      setCustomMessage('');
-    } catch (err: any) {
-      const msg = err.response?.data?.detail || '发送失败';
-      showAlert('错误', msg);
-    } finally {
-      setSending(false);
-    }
-  };
-
-  // ── Supporter: Send Encouragement ─────────────────────────────────────────
-  if (isSupporter) {
+  if (loadingPeers) {
     return (
-      <ScrollView
-        style={styles.container}
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
-        <Text style={styles.pageTitle}>{'发送鼓励'}</Text>
-        <Text style={styles.pageSubtitle}>{'为您关心的人送上温暖的话语'}</Text>
-
-        {loading ? (
-          <ActivityIndicator size="large" color="#5DA480" style={{ marginTop: 40 }} />
-        ) : links.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyEmoji}>{'💌'}</Text>
-            <Text style={styles.emptyText}>{'请先在"天使状态"页面关联天使'}</Text>
-          </View>
-        ) : (
-          <>
-            {/* Patient Selector */}
-            <View style={styles.card}>
-              <Text style={styles.cardLabel}>{'选择天使'}</Text>
-              <View style={styles.patientChips}>
-                {links.map((link) => {
-                  const isActive = selectedPatientId === link.patient.id;
-                  return (
-                    <TouchableOpacity
-                      key={link.id}
-                      style={[styles.patientChip, isActive && styles.patientChipActive]}
-                      onPress={() => setSelectedPatientId(link.patient.id)}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={[styles.patientChipText, isActive && styles.patientChipTextActive]}>
-                        {link.patient.username}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </View>
-
-            {/* Preset Messages */}
-            <View style={styles.card}>
-              <Text style={styles.cardLabel}>{'快捷消息'}</Text>
-              <View style={styles.presetList}>
-                {PRESET_MESSAGES.map((msg, idx) => (
-                  <TouchableOpacity
-                    key={idx}
-                    style={styles.presetItem}
-                    onPress={() => handleSend(msg)}
-                    disabled={sending}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.presetText}>{msg}</Text>
-                    <Text style={styles.presetArrow}>{'›'}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-
-            {/* Custom Message */}
-            <View style={styles.card}>
-              <Text style={styles.cardLabel}>{'自定义消息'}</Text>
-              <TextInput
-                style={styles.customInput}
-                placeholder="写下你想说的话..."
-                placeholderTextColor="#B0BEC5"
-                value={customMessage}
-                onChangeText={setCustomMessage}
-                multiline
-                numberOfLines={3}
-                textAlignVertical="top"
-              />
-              <TouchableOpacity
-                style={[styles.sendBtn, (sending || !customMessage.trim()) && styles.sendBtnDisabled]}
-                onPress={() => handleSend(customMessage)}
-                disabled={sending || !customMessage.trim()}
-                activeOpacity={0.8}
-              >
-                {sending ? (
-                  <ActivityIndicator color="#fff" size="small" />
-                ) : (
-                  <Text style={styles.sendBtnText}>{'发送'}</Text>
-                )}
-              </TouchableOpacity>
-            </View>
-          </>
-        )}
-      </ScrollView>
+      <View style={[styles.container, styles.center]}>
+        <ActivityIndicator size="large" color={accentColor} />
+      </View>
     );
   }
 
-  // ── Patient: Received Encouragement ───────────────────────────────────────
-  return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={styles.content}
-      refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#5DA480" />
-      }
-      showsVerticalScrollIndicator={false}
-    >
-      <Text style={styles.pageTitle}>{'守护者鼓励'}</Text>
-      <Text style={styles.pageSubtitle}>{'来自守护者的温暖话语'}</Text>
+  if (peers.length === 0) {
+    return (
+      <View style={[styles.container, styles.center]}>
+        <Text style={styles.emptyEmoji}>{'💌'}</Text>
+        <Text style={styles.emptyText}>
+          {isSupporter
+            ? '请先在"天使状态"页面关联天使'
+            : '还没有守护者关联你'}
+        </Text>
+        {!isSupporter && (
+          <Text style={styles.emptyHint}>
+            {'让家人朋友用你的用户名关联后，就能在这里聊天了'}
+          </Text>
+        )}
+      </View>
+    );
+  }
 
-      {loading ? (
-        <ActivityIndicator size="large" color="#5DA480" style={{ marginTop: 40 }} />
-      ) : messages.length === 0 ? (
-        <View style={styles.emptyContainer}>
-          <Text style={styles.emptyEmoji}>{'💌'}</Text>
-          <Text style={styles.emptyText}>{'还没有收到鼓励消息'}</Text>
-          <Text style={styles.emptyHint}>{'守护者关联后可以给您发送鼓励'}</Text>
-        </View>
-      ) : (
-        messages.map((msg) => (
-          <View key={msg.id} style={styles.msgCard}>
-            <View style={styles.msgHeader}>
-              <View style={styles.msgAvatar}>
-                <Text style={styles.msgAvatarText}>
-                  {msg.sender_name?.charAt(0).toUpperCase() || '?'}
+  return (
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={80}
+    >
+      {/* Peer selector + connection status */}
+      <View style={styles.peerBar}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.peerScroll}
+          contentContainerStyle={styles.peerBarContent}
+        >
+          {peers.map((p) => {
+            const active = p.id === selectedPeerId;
+            return (
+              <TouchableOpacity
+                key={p.id}
+                style={[
+                  styles.peerChip,
+                  active && { backgroundColor: accentBg, borderColor: accentColor },
+                ]}
+                onPress={() => setSelectedPeerId(p.id)}
+                activeOpacity={0.7}
+              >
+                <Text
+                  style={[
+                    styles.peerChipText,
+                    active && { color: accentColor, fontWeight: '700' },
+                  ]}
+                >
+                  {p.name}
                 </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+        <View style={styles.statusRow}>
+          <View
+            style={[
+              styles.statusDot,
+              { backgroundColor: status === 'open' ? '#5DA480' : '#D8A656' },
+            ]}
+          />
+          <Text style={styles.statusText}>
+            {status === 'open' ? '实时连接' : status === 'connecting' ? '连接中…' : '已断开'}
+          </Text>
+        </View>
+      </View>
+
+      {/* Message list */}
+      <ScrollView
+        ref={scrollRef}
+        style={styles.msgArea}
+        contentContainerStyle={styles.msgContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {loadingHistory ? (
+          <ActivityIndicator color={accentColor} style={{ marginTop: 30 }} />
+        ) : messages.length === 0 ? (
+          <Text style={styles.placeholderText}>{'还没有消息，发送第一条吧 ✉️'}</Text>
+        ) : (
+          messages.map((m: EncouragementMessage) => {
+            const mine = meId != null && m.sender === meId;
+            return (
+              <View
+                key={m.id}
+                style={[styles.msgRow, mine ? styles.msgRowRight : styles.msgRowLeft]}
+              >
+                {!mine && (
+                  <View style={[styles.avatar, { backgroundColor: accentBg }]}>
+                    <Text style={[styles.avatarText, { color: accentColor }]}>
+                      {(m.sender_name || '?').charAt(0).toUpperCase()}
+                    </Text>
+                  </View>
+                )}
+                <View
+                  style={[
+                    styles.bubble,
+                    mine
+                      ? { backgroundColor: accentColor }
+                      : { backgroundColor: '#fff', borderColor: '#E2EBE6', borderWidth: 1 },
+                  ]}
+                >
+                  <Text style={mine ? styles.bubbleTextMine : styles.bubbleText}>
+                    {m.content}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.bubbleTime,
+                      mine ? { color: 'rgba(255,255,255,0.7)' } : { color: '#A0B0A8' },
+                    ]}
+                  >
+                    {formatTime(m.created_at)}
+                  </Text>
+                </View>
               </View>
-              <View style={styles.msgMeta}>
-                <Text style={styles.msgSender}>{msg.sender_name}</Text>
-                <Text style={styles.msgDate}>{formatDate(msg.created_at)}</Text>
-              </View>
-            </View>
-            <Text style={styles.msgContent}>{msg.content}</Text>
-          </View>
-        ))
+            );
+          })
+        )}
+      </ScrollView>
+
+      {/* Quick presets (supporter only) */}
+      {isSupporter && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.presetScroll}
+          contentContainerStyle={styles.presetRow}
+        >
+          {PRESETS.map((p, i) => (
+            <TouchableOpacity
+              key={i}
+              style={styles.presetChip}
+              onPress={() => handleSend(p)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.presetChipText}>{p}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
       )}
-    </ScrollView>
+
+      {/* Input bar */}
+      <View style={styles.inputBar}>
+        <TextInput
+          style={styles.input}
+          placeholder={isSupporter ? '说点温暖的话…' : '回复…'}
+          placeholderTextColor="#B0BEC5"
+          value={draft}
+          onChangeText={setDraft}
+          multiline
+          maxLength={500}
+        />
+        <TouchableOpacity
+          style={[
+            styles.sendBtn,
+            { backgroundColor: accentColor },
+            !draft.trim() && styles.sendBtnDisabled,
+          ]}
+          onPress={() => handleSend(draft)}
+          disabled={!draft.trim()}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.sendBtnText}>{'发送'}</Text>
+        </TouchableOpacity>
+      </View>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F4F7F5',
-  },
-  content: {
-    padding: 16,
-    paddingTop: 20,
-    paddingBottom: 40,
-  },
-  pageTitle: {
-    fontSize: 24,
-    fontWeight: '800',
-    color: '#2D4A3E',
-    marginBottom: 4,
-  },
-  pageSubtitle: {
-    fontSize: 14,
-    color: '#8E9E95',
-    marginBottom: 20,
-  },
+  container: { flex: 1, backgroundColor: '#F4F7F5' },
+  center: { justifyContent: 'center', alignItems: 'center', padding: 24 },
 
-  card: {
+  peerBar: {
     backgroundColor: '#fff',
-    borderRadius: 18,
-    padding: 18,
-    marginBottom: 16,
-    shadowColor: '#2D4A3E',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 10,
-    elevation: 3,
+    paddingTop: 8,
+    paddingBottom: 6,
+    borderBottomColor: '#E2EBE6',
+    borderBottomWidth: 1,
   },
-  cardLabel: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#2D4A3E',
-    marginBottom: 12,
-  },
-
-  // Patient chips
-  patientChips: {
+  peerScroll: { flexGrow: 0, flexShrink: 0 },
+  peerBarContent: {
+    paddingHorizontal: 12,
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
+    alignItems: 'center',
   },
-  patientChip: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 20,
+  peerChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 18,
     backgroundColor: '#F0F4F1',
     borderWidth: 1.5,
     borderColor: '#E2EBE6',
+    marginRight: 8,
   },
-  patientChipActive: {
-    backgroundColor: '#EEF6F1',
-    borderColor: '#5DA480',
+  peerChipText: { fontSize: 13, color: '#8E9E95', fontWeight: '600' },
+
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: 6,
   },
-  patientChipText: {
-    fontSize: 14,
-    fontWeight: '600',
+  statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
+  statusText: { fontSize: 11, color: '#8E9E95' },
+
+  msgArea: { flex: 1 },
+  msgContent: { padding: 14, paddingBottom: 8 },
+  placeholderText: {
+    textAlign: 'center',
+    marginTop: 40,
     color: '#8E9E95',
-  },
-  patientChipTextActive: {
-    color: '#3D7A5F',
-  },
-
-  // Preset messages
-  presetList: {
-    gap: 6,
-  },
-  presetItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 14,
-    backgroundColor: '#F7FAF8',
-    borderRadius: 12,
-  },
-  presetText: {
-    flex: 1,
     fontSize: 14,
-    color: '#2D4A3E',
-    lineHeight: 20,
-  },
-  presetArrow: {
-    fontSize: 20,
-    color: '#C0CCC5',
-    marginLeft: 8,
   },
 
-  // Custom input
-  customInput: {
-    borderWidth: 1.5,
-    borderColor: '#E2EBE6',
-    borderRadius: 14,
-    padding: 14,
-    fontSize: 15,
-    backgroundColor: '#F7FAF8',
-    minHeight: 80,
-    marginBottom: 12,
-    color: '#2D4A3E',
-    lineHeight: 22,
-  },
-  sendBtn: {
-    backgroundColor: '#5DA480',
-    borderRadius: 14,
-    padding: 14,
-    alignItems: 'center',
-  },
-  sendBtnDisabled: {
-    opacity: 0.5,
-  },
-  sendBtnText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '700',
-  },
-
-  // Message cards (patient view)
-  msgCard: {
-    backgroundColor: '#fff',
-    borderRadius: 18,
-    padding: 18,
-    marginBottom: 12,
-    shadowColor: '#2D4A3E',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  msgHeader: {
+  msgRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 10,
+    alignItems: 'flex-end',
   },
-  msgAvatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#EEF6F1',
+  msgRowLeft: { justifyContent: 'flex-start' },
+  msgRowRight: { justifyContent: 'flex-end' },
+  avatar: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 10,
+    marginRight: 6,
   },
-  msgAvatarText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#5DA480',
+  avatarText: { fontSize: 13, fontWeight: '700' },
+  bubble: {
+    maxWidth: '78%',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 16,
   },
-  msgMeta: {
-    flex: 1,
-  },
-  msgSender: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#2D4A3E',
-  },
-  msgDate: {
-    fontSize: 12,
-    color: '#A0B0A8',
-    marginTop: 2,
-  },
-  msgContent: {
-    fontSize: 15,
-    color: '#2D4A3E',
-    lineHeight: 24,
-    backgroundColor: '#F7FAF8',
-    borderRadius: 12,
-    padding: 14,
-  },
+  bubbleText: { fontSize: 15, color: '#2D4A3E', lineHeight: 21 },
+  bubbleTextMine: { fontSize: 15, color: '#fff', lineHeight: 21 },
+  bubbleTime: { fontSize: 10, marginTop: 4, alignSelf: 'flex-end' },
 
-  // Empty
-  emptyContainer: {
+  presetScroll: {
+    flexGrow: 0,
+    flexShrink: 0,
+    backgroundColor: '#fff',
+    borderTopColor: '#E2EBE6',
+    borderTopWidth: 1,
+  },
+  presetRow: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 60,
   },
-  emptyEmoji: {
-    fontSize: 48,
-    marginBottom: 14,
+  presetChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: '#F7FAF8',
+    borderWidth: 1,
+    borderColor: '#E2EBE6',
+    marginRight: 8,
   },
+  presetChipText: { fontSize: 12, color: '#5A7D6A' },
+
+  inputBar: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: '#fff',
+    borderTopColor: '#E2EBE6',
+    borderTopWidth: 1,
+  },
+  input: {
+    flex: 1,
+    minHeight: 40,
+    maxHeight: 100,
+    borderWidth: 1,
+    borderColor: '#E2EBE6',
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: '#F7FAF8',
+    fontSize: 15,
+    color: '#2D4A3E',
+    marginRight: 8,
+    ...(Platform.OS === 'web' ? { outlineStyle: 'none' as any } : {}),
+  },
+  sendBtn: {
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  sendBtnDisabled: { opacity: 0.5 },
+  sendBtnText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+
+  emptyEmoji: { fontSize: 56, marginBottom: 14 },
   emptyText: {
     fontSize: 16,
-    color: '#8E9E95',
+    color: '#5A7D6A',
     fontWeight: '600',
-    marginBottom: 4,
+    textAlign: 'center',
+    marginBottom: 6,
   },
-  emptyHint: {
-    fontSize: 13,
-    color: '#A0B0A8',
-  },
+  emptyHint: { fontSize: 13, color: '#A0B0A8', textAlign: 'center' },
 });

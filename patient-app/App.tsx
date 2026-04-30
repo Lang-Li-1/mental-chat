@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { NavigationContainer, LinkingOptions } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -15,6 +15,32 @@ export type RootStackParamList = {
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
+
+function buildLinking(role: string | null): LinkingOptions<RootStackParamList> {
+  const isSupporter = role === 'supporter';
+  const p = (path: string) => (isSupporter ? `supporter/${path}` : path);
+  return {
+    prefixes: ['mentalchat://', 'http://localhost', 'https://localhost'],
+    config: {
+      screens: {
+        Login: p('login'),
+        Home: {
+          path: isSupporter ? 'supporter' : '',
+          screens: {
+            Mood: 'mood',
+            Chat: 'chat',
+            Recovery: 'recovery',
+            Articles: 'articles',
+            Assessment: 'assessment',
+            SupporterHome: 'home',
+            Encouragement: 'encouragement',
+            Profile: 'profile',
+          },
+        },
+      },
+    },
+  };
+}
 
 export default function App() {
   const [token, setToken] = useState<string | null>(null);
@@ -61,6 +87,8 @@ export default function App() {
     },
   };
 
+  const linking = useMemo(() => buildLinking(userRole), [userRole]);
+
   if (isLoading) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
@@ -71,7 +99,7 @@ export default function App() {
 
   return (
     <AuthContext.Provider value={authContext}>
-      <NavigationContainer>
+      <NavigationContainer linking={linking}>
         <Stack.Navigator screenOptions={{ headerShown: false }}>
           {token == null ? (
             <Stack.Screen name="Login" component={LoginScreen} />

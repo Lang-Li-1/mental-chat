@@ -124,8 +124,12 @@ urlpatterns = [
     path("supporter/linked_patients", views.supporter_linked_patients, name="supporter-linked-patients"),
     path("supporter/link_patient", views.supporter_link_patient, name="supporter-link-patient"),
     path("supporter/send_encouragement", views.send_encouragement, name="send-encouragement"),
+    path("patient/linked_supporters", views.patient_linked_supporters, name="patient-linked-supporters"),
     path("encouragements", views.received_encouragements, name="received-encouragements"),
     path("encouragements/unread_count", views.unread_encouragement_count, name="unread-encouragement-count"),
+    # Bidirectional chat between patient and supporter
+    path("chat/conversation/<int:peer_id>", views.chat_conversation, name="chat-conversation"),
+    path("chat/conversation/<int:peer_id>/send", views.chat_send, name="chat-send"),
     # TTS
     path("tts", views.tts_proxy, name="tts-proxy"),
 ]

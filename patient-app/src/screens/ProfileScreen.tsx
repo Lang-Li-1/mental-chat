@@ -11,7 +11,7 @@ import {
   Platform,
 } from 'react-native';
 import { AuthContext } from '../context/AuthContext';
-import { userAPI, UserInfo, encouragementAPI, EncouragementMessage } from '../services/api';
+import { userAPI, UserInfo } from '../services/api';
 
 function formatDate(dateStr: string): string {
   const date = new Date(dateStr);
@@ -43,22 +43,11 @@ export default function ProfileScreen() {
   const [user, setUser] = useState<UserInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [encouragements, setEncouragements] = useState<EncouragementMessage[]>([]);
-  const [unreadCount, setUnreadCount] = useState(0);
 
   const fetchUser = useCallback(async () => {
     try {
       const response = await userAPI.getMe();
       setUser(response.data);
-      // Fetch encouragement messages for patients
-      if (response.data.role === 'patient') {
-        try {
-          const countRes = await encouragementAPI.unreadCount();
-          setUnreadCount(countRes.data.count);
-          const msgRes = await encouragementAPI.list();
-          setEncouragements(msgRes.data);
-        } catch {}
-      }
     } catch (error: any) {
       console.error('Failed to fetch user info', error);
     } finally {
@@ -221,26 +210,6 @@ export default function ProfileScreen() {
           </Text>
         </View>
       </View>
-
-      {/* Encouragement Messages (patient only) */}
-      {user?.role === 'patient' && encouragements.length > 0 && (
-        <View style={styles.infoSection}>
-          <Text style={styles.sectionTitle}>
-            {`💌 守护者鼓励${unreadCount > 0 ? ` (${unreadCount}条新消息)` : ''}`}
-          </Text>
-          {encouragements.slice(0, 5).map((msg) => (
-            <View key={msg.id} style={styles.encourageItem}>
-              <View style={styles.encourageHeader}>
-                <Text style={styles.encourageSender}>{msg.sender_name}</Text>
-                <Text style={styles.encourageDate}>
-                  {new Date(msg.created_at).toLocaleDateString('zh-CN')}
-                </Text>
-              </View>
-              <Text style={styles.encourageContent}>{msg.content}</Text>
-            </View>
-          ))}
-        </View>
-      )}
 
       {/* Privacy Settings */}
       <View style={styles.infoSection}>
@@ -437,31 +406,6 @@ const styles = StyleSheet.create({
   divider: {
     height: 1,
     backgroundColor: '#EFF3F0',
-  },
-  encourageItem: {
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#EFF3F0',
-  },
-  encourageHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  encourageSender: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#5DA480',
-  },
-  encourageDate: {
-    fontSize: 12,
-    color: '#A0B0A8',
-  },
-  encourageContent: {
-    fontSize: 14,
-    color: '#2D4A3E',
-    lineHeight: 21,
   },
   logoutButton: {
     backgroundColor: '#fff',

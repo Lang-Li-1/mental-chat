@@ -332,12 +332,29 @@ export const supporterAPI = {
     }),
 };
 
+export const patientAPI = {
+  getLinkedSupporters: () =>
+    api.get<SupporterLink[]>('/api/patient/linked_supporters'),
+};
+
 export const encouragementAPI = {
   list: () =>
     api.get<EncouragementMessage[]>('/api/encouragements'),
 
   unreadCount: () =>
     api.get<{ count: number }>('/api/encouragements/unread_count'),
+};
+
+// ── Bidirectional chat between patient and supporter ────────────────────────
+
+export const peerChatAPI = {
+  history: (peerId: number) =>
+    api.get<EncouragementMessage[]>(`/api/chat/conversation/${peerId}`),
+
+  send: (peerId: number, content: string) =>
+    api.post<EncouragementMessage>(`/api/chat/conversation/${peerId}/send`, {
+      content,
+    }),
 };
 
 // ── Patient Status API ──────────────────────────────────────────────────────

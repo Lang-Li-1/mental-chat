@@ -1303,6 +1303,65 @@ def unread_encouragement_count(request):
     return Response({"count": count})
 
 
+# ── Patient ↔ Supporter chat (bidirectional) ────────────────────────────────
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated])
+def patient_linked_supporters(request):
+    """List supporters linked to the current patient (mirrors supporter_linked_patients)."""
+    if request.user.role != "patient":
+        return Response({"detail": "Only patients can list their supporters."}, status=status.HTTP_403_FORBIDDEN)
+    links = SupporterLink.objects.filter(patient=request.user).select_related("supporter", "patient")
+    return Response(SupporterLinkSerializer(links, many=True).data)
+
+
+def _verify_chat_pair(user, peer_id):
+    """Both directions of SupporterLink count. Returns (peer_user, error_response)."""
+    try:
+        peer = User.objects.get(id=peer_id)
+    except (User.DoesNotExist, ValueError):
+        return None, Response({"detail": "Peer not found."}, status=status.HTTP_404_NOT_FOUND)
+    linked = SupporterLink.objects.filter(supporter=user, patient=peer).exists() or \
+        SupporterLink.objects.filter(supporter=peer, patient=user).exists()
+    if not linked:
+        return None, Response({"detail": "Not linked to this peer."}, status=status.HTTP_403_FORBIDDEN)
+    return peer, None
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated])
+def chat_conversation(request, peer_id):
+    """Get message history between the current user and a linked peer (most recent 100)."""
+    peer, err = _verify_chat_pair(request.user, peer_id)
+    if err:
+        return err
+    qs = EncouragementMessage.objects.filter(
+        models.Q(sender=request.user, receiver=peer) | models.Q(sender=peer, receiver=request.user)
+    ).order_by("created_at")[:200]
+    # Mark messages from peer as read
+    EncouragementMessage.objects.filter(
+        sender=peer, receiver=request.user, is_read=False
+    ).update(is_read=True)
+    return Response(EncouragementMessageSerializer(qs, many=True).data)
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def chat_send(request, peer_id):
+    """Send a message to a linked peer (HTTP fallback; WebSocket is preferred)."""
+    peer, err = _verify_chat_pair(request.user, peer_id)
+    if err:
+        return err
+    content = (request.data.get("content") or "").strip()
+    if not content:
+        return Response({"detail": "content is required."}, status=status.HTTP_400_BAD_REQUEST)
+    msg = EncouragementMessage.objects.create(
+        sender=request.user, receiver=peer, content=content,
+    )
+    return Response(EncouragementMessageSerializer(msg).data, status=status.HTTP_201_CREATED)
+
+
 # ── Articles ──────────────────────────────────────────────────────────────
 
 
