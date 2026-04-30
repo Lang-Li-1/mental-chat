@@ -98,6 +98,17 @@ export async function updateAdminUser(
   return response.data;
 }
 
+export async function createAdminUser(data: {
+  username: string;
+  password: string;
+  role: 'admin' | 'professional';
+  email?: string;
+  phone?: string;
+}): Promise<Patient> {
+  const response = await api.post<Patient>('/api/admin/users', data);
+  return response.data;
+}
+
 // ── Admin: Stats ─────────────────────────────────────────────────────────────
 
 export async function getAdminStats(): Promise<{

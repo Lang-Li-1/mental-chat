@@ -941,10 +941,47 @@ def admin_assignments(request):
     )
 
 
-@api_view(["GET"])
+@api_view(["GET", "POST"])
 @permission_classes([permissions.IsAuthenticated, IsAdmin])
 def admin_user_list(request):
-    """Admin: list all users with optional role filter."""
+    """Admin: list all users (GET) or create a staff user (POST, admin/professional only)."""
+    if request.method == "POST":
+        data = request.data or {}
+        username = (data.get("username") or "").strip()
+        password = data.get("password") or ""
+        role = (data.get("role") or "").strip()
+        email = (data.get("email") or "").strip() or None
+        phone = (data.get("phone") or "").strip() or None
+
+        if role not in ("admin", "professional"):
+            return Response(
+                {"detail": "role 必须是 admin 或 professional。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not username or not password:
+            return Response(
+                {"detail": "username 和 password 必填。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(password) < 8:
+            return Response(
+                {"detail": "密码至少 8 位。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if User.objects.filter(username=username).exists():
+            return Response(
+                {"detail": "用户名已存在。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = User(username=username, email=email, phone=phone, role=role)
+        if role == "admin":
+            user.is_staff = True
+            user.is_superuser = True
+        user.set_password(password)
+        user.save()
+        return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
+
     role = request.query_params.get("role")
     qs = User.objects.all().order_by("-created_at")
     if role:
