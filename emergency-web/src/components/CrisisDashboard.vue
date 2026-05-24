@@ -94,6 +94,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { fetchActiveCrisisAlerts, updateAlertStatus } from '../services/api'
 import type { CrisisAlert } from '../types/crisis'
 import AlertCard from './AlertCard.vue'
+import { toChineseErrorMessage } from '../utils/errorMessage'
 
 const POLL_INTERVAL = 30000 // Fallback polling (30s, WebSocket is primary)
 const WS_RECONNECT_DELAY = 3000
@@ -191,7 +192,7 @@ async function fetchAlerts() {
   } catch (err: unknown) {
     hasError.value = true
     if (err instanceof Error) {
-      errorMessage.value = err.message
+      errorMessage.value = toChineseErrorMessage(err.message, '未知错误')
     } else {
       errorMessage.value = '未知错误'
     }
@@ -228,7 +229,8 @@ function connectWs() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const baseUrl = import.meta.env.VITE_API_BASE_URL || window.location.origin
   const wsHost = baseUrl.replace(/^https?:\/\//, '')
-  const socket = new WebSocket(`${protocol}//${wsHost}/ws/alerts/`)
+  const token = localStorage.getItem('emergency_token') || ''
+  const socket = new WebSocket(`${protocol}//${wsHost}/ws/alerts/?token=${encodeURIComponent(token)}`)
 
   socket.onopen = () => {
     wsConnected.value = true

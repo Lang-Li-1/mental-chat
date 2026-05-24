@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react'
 import {
   TouchableOpacity,
   Text,
@@ -9,31 +9,35 @@ import {
   Platform,
   TextInput,
   ScrollView,
-} from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { crisisAPI } from '../services/api';
+} from 'react-native'
+import AsyncStorage from '@react-native-async-storage/async-storage'
+import { crisisAPI } from '../services/api'
 
 interface Contact {
-  name: string;
-  phone: string;
-  desc: string;
+  name: string
+  phone: string
+  desc: string
 }
 
 const BUILTIN_CONTACTS: Contact[] = [
-  { name: '24小时心理援助热线', phone: '400-161-9995', desc: '全国心理危机干预热线' },
+  {
+    name: '24小时心理援助热线',
+    phone: '400-161-9995',
+    desc: '全国心理危机干预热线',
+  },
   { name: '生命热线', phone: '400-821-1215', desc: '全国24小时' },
   { name: '急救电话', phone: '120', desc: '医疗急救' },
   { name: '报警电���', phone: '110', desc: '紧急求助' },
-];
+]
 
-const STORAGE_KEY = 'custom_emergency_contacts';
+const STORAGE_KEY = 'custom_emergency_contacts'
 
 function callPhone(phone: string) {
-  const url = `tel:${phone.replace(/-/g, '')}`;
+  const url = `tel:${phone.replace(/-/g, '')}`
   if (Platform.OS === 'web') {
-    window.open(url, '_self');
+    window.open(url, '_self')
   } else {
-    Linking.openURL(url);
+    Linking.openURL(url)
   }
 }
 
@@ -43,134 +47,152 @@ function callPhone(phone: string) {
  * - Web (Chrome on Android): uses Contact Picker API
  * Returns an array of { name, phone } or null if unavailable/cancelled.
  */
-async function pickContactsFromDevice(): Promise<{ name: string; phone: string }[] | null> {
+async function pickContactsFromDevice(): Promise<
+  { name: string; phone: string }[] | null
+> {
   // ── Native: expo-contacts ──
   if (Platform.OS !== 'web') {
     try {
-      const Contacts = require('expo-contacts');
-      const { status } = await Contacts.requestPermissionsAsync();
+      const Contacts = require('expo-contacts')
+      const { status } = await Contacts.requestPermissionsAsync()
       if (status !== 'granted') {
-        return null;
+        return null
       }
       const { data } = await Contacts.getContactsAsync({
         fields: [Contacts.Fields.PhoneNumbers, Contacts.Fields.Name],
-      });
-      if (!data || data.length === 0) return null;
+      })
+      if (!data || data.length === 0) return null
 
       return data
         .filter((c: any) => c.phoneNumbers && c.phoneNumbers.length > 0)
         .map((c: any) => ({
           name: c.name || c.firstName || '未知',
           phone: c.phoneNumbers[0].number || '',
-        }));
+        }))
     } catch {
-      return null;
+      return null
     }
   }
 
   // ── Web: Contact Picker API (Chrome Android) ──
   if ('contacts' in navigator && 'ContactsManager' in window) {
     try {
-      const props = ['name', 'tel'];
-      const contacts = await (navigator as any).contacts.select(props, { multiple: true });
-      if (!contacts || contacts.length === 0) return null;
+      const props = ['name', 'tel']
+      const contacts = await (navigator as any).contacts.select(props, {
+        multiple: true,
+      })
+      if (!contacts || contacts.length === 0) return null
       return contacts
         .filter((c: any) => c.tel && c.tel.length > 0)
         .map((c: any) => ({
           name: c.name?.[0] || '未知',
           phone: c.tel[0],
-        }));
+        }))
     } catch {
-      return null;
+      return null
     }
   }
 
-  return null;
+  return null
 }
 
 export default function EmergencyButton() {
-  const [visible, setVisible] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [customContacts, setCustomContacts] = useState<Contact[]>([]);
-  const [newName, setNewName] = useState('');
-  const [newPhone, setNewPhone] = useState('');
-  const [importing, setImporting] = useState(false);
-  const [pickedContacts, setPickedContacts] = useState<{ name: string; phone: string }[] | null>(null);
+  const [visible, setVisible] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [customContacts, setCustomContacts] = useState<Contact[]>([])
+  const [newName, setNewName] = useState('')
+  const [newPhone, setNewPhone] = useState('')
+  const [importing, setImporting] = useState(false)
+  const [pickedContacts, setPickedContacts] = useState<
+    { name: string; phone: string }[] | null
+  >(null)
 
   const loadCustomContacts = useCallback(async () => {
     try {
-      const data = await AsyncStorage.getItem(STORAGE_KEY);
-      if (data) setCustomContacts(JSON.parse(data));
+      const data = await AsyncStorage.getItem(STORAGE_KEY)
+      if (data) setCustomContacts(JSON.parse(data))
     } catch {}
-  }, []);
+  }, [])
 
   useEffect(() => {
-    loadCustomContacts();
-  }, [loadCustomContacts]);
+    loadCustomContacts()
+  }, [loadCustomContacts])
 
   const saveCustomContacts = async (contacts: Contact[]) => {
-    setCustomContacts(contacts);
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(contacts));
-  };
+    setCustomContacts(contacts)
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(contacts))
+  }
 
   const handleAdd = () => {
-    const name = newName.trim();
-    const phone = newPhone.trim();
-    if (!name || !phone) return;
-    const updated = [...customContacts, { name, phone, desc: '自定义联系人' }];
-    saveCustomContacts(updated);
-    setNewName('');
-    setNewPhone('');
-  };
+    const name = newName.trim()
+    const phone = newPhone.trim()
+    if (!name || !phone) return
+    const updated = [...customContacts, { name, phone, desc: '自定义联系人' }]
+    saveCustomContacts(updated)
+    setNewName('')
+    setNewPhone('')
+  }
 
   const handleDelete = (index: number) => {
-    const updated = customContacts.filter((_, i) => i !== index);
-    saveCustomContacts(updated);
-  };
+    const updated = customContacts.filter((_, i) => i !== index)
+    saveCustomContacts(updated)
+  }
 
   const handleImport = async () => {
-    setImporting(true);
-    const contacts = await pickContactsFromDevice();
-    setImporting(false);
+    setImporting(true)
+    const contacts = await pickContactsFromDevice()
+    setImporting(false)
 
     if (contacts === null) {
       // Not supported or denied — show a hint
       if (Platform.OS === 'web') {
-        window.alert('当前浏览器不支持读取通讯录，请手动输入联系人。\n\n提示：在手机端使用本应用可直接导入通讯录。');
+        window.alert(
+          '当前浏览器不支持读取通讯录，请手动输入联系人。\n\n提示：在手机端使用本应用可直接导入通讯录。',
+        )
       }
-      return;
+      return
     }
 
-    if (contacts.length === 0) return;
+    if (contacts.length === 0) return
 
     // Show picker list to select which ones to add
-    setPickedContacts(contacts);
-  };
+    setPickedContacts(contacts)
+  }
 
   const handlePickConfirm = (selected: { name: string; phone: string }[]) => {
     const newOnes: Contact[] = selected.map((c) => ({
       name: c.name,
       phone: c.phone,
       desc: '通讯录导入',
-    }));
-    const updated = [...customContacts, ...newOnes];
-    saveCustomContacts(updated);
-    setPickedContacts(null);
-  };
+    }))
+    const updated = [...customContacts, ...newOnes]
+    saveCustomContacts(updated)
+    setPickedContacts(null)
+  }
 
   return (
     <>
       <TouchableOpacity
         style={styles.sosButton}
         onPress={() => {
-          setVisible(true); setEditing(false); setPickedContacts(null);
+          setVisible(true)
+          setEditing(false)
+          setPickedContacts(null)
           // 创建危机告警记录
-          AsyncStorage.getItem('user_info').then((raw) => {
-            const userId = raw ? JSON.parse(raw).id : undefined;
-            if (userId) {
-              crisisAPI.create({ user: userId, level: 'high', description: '天使主动发起紧急求助' }).catch(() => {});
-            }
-          }).catch(() => {});
+          AsyncStorage.getItem('user_info')
+            .then((raw) => {
+              const userId = raw ? JSON.parse(raw).id : undefined
+              if (userId) {
+                crisisAPI
+                  .create({
+                    user: userId,
+                    level: 'high',
+                    description: '患者主动发起紧急求助',
+                  })
+                  .catch(() => {})
+              }
+            })
+            .catch(() => {})
         }}
         activeOpacity={0.7}
       >
@@ -207,8 +229,17 @@ export default function EmergencyButton() {
                       >
                         <View style={styles.contactInfo}>
                           <View style={styles.nameRow}>
-                            <View style={[styles.badge, c.desc === '通讯录导入' ? styles.badgeImport : styles.badgeCustom]}>
-                              <Text style={styles.badgeText}>{c.desc === '通讯录导入' ? '导入' : '自定义'}</Text>
+                            <View
+                              style={[
+                                styles.badge,
+                                c.desc === '通讯录导入'
+                                  ? styles.badgeImport
+                                  : styles.badgeCustom,
+                              ]}
+                            >
+                              <Text style={styles.badgeText}>
+                                {c.desc === '通讯录导入' ? '导入' : '自定义'}
+                              </Text>
                             </View>
                             <Text style={styles.contactName}>{c.name}</Text>
                           </View>
@@ -216,7 +247,10 @@ export default function EmergencyButton() {
                         <Text style={styles.contactPhone}>{c.phone}</Text>
                       </TouchableOpacity>
                       {editing && (
-                        <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDelete(i)}>
+                        <TouchableOpacity
+                          style={styles.deleteBtn}
+                          onPress={() => handleDelete(i)}
+                        >
                           <Text style={styles.deleteBtnText}>删除</Text>
                         </TouchableOpacity>
                       )}
@@ -244,7 +278,10 @@ export default function EmergencyButton() {
                     <Text style={styles.addFormTitle}>添加紧急联系人</Text>
 
                     <TouchableOpacity
-                      style={[styles.importBtn, importing && styles.addBtnDisabled]}
+                      style={[
+                        styles.importBtn,
+                        importing && styles.addBtnDisabled,
+                      ]}
                       onPress={handleImport}
                       disabled={importing}
                     >
@@ -273,7 +310,11 @@ export default function EmergencyButton() {
                       keyboardType="phone-pad"
                     />
                     <TouchableOpacity
-                      style={[styles.addBtn, (!newName.trim() || !newPhone.trim()) && styles.addBtnDisabled]}
+                      style={[
+                        styles.addBtn,
+                        (!newName.trim() || !newPhone.trim()) &&
+                          styles.addBtnDisabled,
+                      ]}
                       onPress={handleAdd}
                       disabled={!newName.trim() || !newPhone.trim()}
                     >
@@ -283,10 +324,18 @@ export default function EmergencyButton() {
                 )}
 
                 <View style={styles.bottomBtns}>
-                  <TouchableOpacity style={styles.editBtn} onPress={() => setEditing(!editing)}>
-                    <Text style={styles.editBtnText}>{editing ? '完成编辑' : '管理联系人'}</Text>
+                  <TouchableOpacity
+                    style={styles.editBtn}
+                    onPress={() => setEditing(!editing)}
+                  >
+                    <Text style={styles.editBtnText}>
+                      {editing ? '完成编辑' : '管理联系人'}
+                    </Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={styles.closeBtn} onPress={() => setVisible(false)}>
+                  <TouchableOpacity
+                    style={styles.closeBtn}
+                    onPress={() => setVisible(false)}
+                  >
                     <Text style={styles.closeBtnText}>关闭</Text>
                   </TouchableOpacity>
                 </View>
@@ -296,7 +345,7 @@ export default function EmergencyButton() {
         </View>
       </Modal>
     </>
-  );
+  )
 }
 
 /** Sub-component: pick which device contacts to import */
@@ -305,28 +354,28 @@ function ContactPicker({
   onConfirm,
   onCancel,
 }: {
-  contacts: { name: string; phone: string }[];
-  onConfirm: (selected: { name: string; phone: string }[]) => void;
-  onCancel: () => void;
+  contacts: { name: string; phone: string }[]
+  onConfirm: (selected: { name: string; phone: string }[]) => void
+  onCancel: () => void
 }) {
-  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [selected, setSelected] = useState<Set<number>>(new Set())
 
   const toggle = (i: number) => {
     setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(i)) next.delete(i);
-      else next.add(i);
-      return next;
-    });
-  };
+      const next = new Set(prev)
+      if (next.has(i)) next.delete(i)
+      else next.add(i)
+      return next
+    })
+  }
 
   const selectAll = () => {
     if (selected.size === contacts.length) {
-      setSelected(new Set());
+      setSelected(new Set())
     } else {
-      setSelected(new Set(contacts.map((_, i) => i)));
+      setSelected(new Set(contacts.map((_, i) => i)))
     }
-  };
+  }
 
   return (
     <View>
@@ -346,7 +395,12 @@ function ContactPicker({
             onPress={() => toggle(i)}
             activeOpacity={0.6}
           >
-            <View style={[styles.checkbox, selected.has(i) && styles.checkboxChecked]}>
+            <View
+              style={[
+                styles.checkbox,
+                selected.has(i) && styles.checkboxChecked,
+              ]}
+            >
               {selected.has(i) && <Text style={styles.checkmark}>✓</Text>}
             </View>
             <View style={styles.pickerInfo}>
@@ -369,7 +423,7 @@ function ContactPicker({
         </TouchableOpacity>
       </View>
     </View>
-  );
+  )
 }
 
 const styles = StyleSheet.create({
@@ -466,7 +520,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#f9f9f9',
     borderRadius: 10,
   },
-  addFormTitle: { fontSize: 14, fontWeight: '600', color: '#333', marginBottom: 10 },
+  addFormTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 10,
+  },
   importBtn: {
     backgroundColor: '#2ECC71',
     borderRadius: 8,
@@ -548,4 +607,4 @@ const styles = StyleSheet.create({
   pickerInfo: { flex: 1 },
   pickerName: { fontSize: 15, fontWeight: '600', color: '#333' },
   pickerPhone: { fontSize: 13, color: '#888', marginTop: 2 },
-});
+})

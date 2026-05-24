@@ -12,6 +12,7 @@ import {
   Platform,
 } from 'react-native';
 import { supporterAPI, patientStatusAPI, SupporterLink, PatientStatusSummary } from '../services/api';
+import { toChineseErrorMessage } from '../utils/errorMessage';
 
 function showAlert(title: string, message: string) {
   if (Platform.OS === 'web') {
@@ -89,18 +90,18 @@ export default function SupporterHomeScreen() {
 
   const handleLink = async () => {
     if (!linkInput.trim()) {
-      showAlert('提示', '请输入天使用户名或手机号');
+      showAlert('提示', '请输入患者用户名或手机号');
       return;
     }
     setLinking(true);
     try {
       await supporterAPI.linkPatient(linkInput.trim());
       setLinkInput('');
-      showAlert('成功', '已成功关联天使');
+      showAlert('成功', '已成功关联患者');
       fetchLinks();
     } catch (err: any) {
       const msg = err.response?.data?.detail || '关联失败，请检查信息是否正确';
-      showAlert('错误', msg);
+      showAlert('错误', toChineseErrorMessage(msg, '关联失败，请检查信息是否正确'));
     } finally {
       setLinking(false);
     }
@@ -136,8 +137,8 @@ export default function SupporterHomeScreen() {
     >
       {/* Link Patient Card */}
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>{'关联天使'}</Text>
-        <Text style={styles.cardDesc}>{'输入天使的用户名或手机号来关联'}</Text>
+        <Text style={styles.cardTitle}>{'关联患者'}</Text>
+        <Text style={styles.cardDesc}>{'输入患者的用户名或手机号来关联'}</Text>
         <View style={styles.linkRow}>
           <TextInput
             style={styles.linkInput}
@@ -163,7 +164,7 @@ export default function SupporterHomeScreen() {
       </View>
 
       {/* Patient List */}
-      <Text style={styles.sectionTitle}>{'已关联的天使'}</Text>
+      <Text style={styles.sectionTitle}>{'已关联的患者'}</Text>
 
       {loading ? (
         <View style={styles.loadingContainer}>
@@ -172,8 +173,8 @@ export default function SupporterHomeScreen() {
       ) : links.length === 0 ? (
         <View style={styles.emptyContainer}>
           <Text style={styles.emptyEmoji}>{'👥'}</Text>
-          <Text style={styles.emptyText}>{'暂未关联任何天使'}</Text>
-          <Text style={styles.emptyHint}>{'请在上方输入天使信息进行关联'}</Text>
+          <Text style={styles.emptyText}>{'暂未关联任何患者'}</Text>
+          <Text style={styles.emptyHint}>{'请在上方输入患者信息进行关联'}</Text>
         </View>
       ) : (
         links.map((link) => {
@@ -266,7 +267,7 @@ export default function SupporterHomeScreen() {
                       )}
                     </>
                   ) : (
-                    <Text style={styles.statusError}>{'无法加载天使状态'}</Text>
+                    <Text style={styles.statusError}>{'无法加载患者状态'}</Text>
                   )}
                 </View>
               )}

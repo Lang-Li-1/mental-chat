@@ -121,7 +121,7 @@ export default function EncouragementScreen() {
         <Text style={styles.emptyEmoji}>{'💌'}</Text>
         <Text style={styles.emptyText}>
           {isSupporter
-            ? '请先在"天使状态"页面关联天使'
+            ? '请先在"患者状态"页面关联患者'
             : '还没有守护者关联你'}
         </Text>
         {!isSupporter && (

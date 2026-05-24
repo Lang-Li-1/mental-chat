@@ -5,6 +5,7 @@ import {
   type PaginatedResponse,
 } from '@mental-chat/shared';
 import { API_BASE_URL } from '../config';
+import { toChineseErrorMessage } from '../utils/errorMessage';
 
 const asyncStorageAdapter: TokenStorage = {
   getItem: (key) => AsyncStorage.getItem(key),
@@ -35,7 +36,8 @@ export interface LoginRequest {
 
 export interface RegisterRequest {
   username: string;
-  email: string;
+  email?: string;
+  phone?: string;
   password: string;
   role: string;
 }
@@ -158,7 +160,7 @@ export const chatAPI = {
 
     if (!response.ok) {
       const errMsg = `Stream request failed: ${response.status}`;
-      onError?.(errMsg);
+      onError?.(toChineseErrorMessage(errMsg));
       throw new Error(errMsg);
     }
 
@@ -186,14 +188,14 @@ export const chatAPI = {
             if (chunk.type === 'meta') onMeta(chunk.user_message);
             else if (chunk.type === 'delta') onDelta(chunk.text);
             else if (chunk.type === 'done') onDone(chunk.ai_message);
-            else if (chunk.type === 'error' || chunk.error) onError?.(chunk.error || 'Stream error');
+            else if (chunk.type === 'error' || chunk.error) onError?.(toChineseErrorMessage(chunk.error || '流式响应异常，请稍后重试。'));
           } catch {}
         }
       }
     } catch (err) {
       if (abortSignal?.aborted) return;
       const errMsg = err instanceof Error ? err.message : 'Connection lost';
-      onError?.(errMsg);
+      onError?.(toChineseErrorMessage(errMsg));
       throw err;
     }
   },
@@ -252,7 +254,10 @@ export interface CreateAssessmentRequest {
 export const assessmentAPI = {
   list: (type?: string) => {
     const params = type ? { type } : {};
-    return api.get<AssessmentResult[]>('/api/assessments', { params });
+    return api.get<PaginatedResponse<AssessmentResult>>('/api/assessments', { params }).then((res) => ({
+      ...res,
+      data: res.data.results,
+    }));
   },
   create: (data: CreateAssessmentRequest) =>
     api.post<AssessmentResult>('/api/assessments', data),

@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { fetchActiveCrisisAlerts, updateAlertStatus, getPatientDetail, type PatientDetail } from '../services/patientService';
 import type { CrisisAlert } from '../types';
+import { toChineseErrorMessage } from '../utils/errorMessage';
 
 const POLL_INTERVAL = 30000; // Fallback polling (30s instead of 5s, WebSocket is primary)
 const WS_RECONNECT_DELAY = 3000;
@@ -128,7 +129,8 @@ function CrisisAlertPage() {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const baseUrl = import.meta.env.VITE_API_BASE_URL || window.location.origin;
       const wsHost = baseUrl.replace(/^https?:\/\//, '');
-      const ws = new WebSocket(`${protocol}//${wsHost}/ws/alerts/`);
+      const token = localStorage.getItem('token') || '';
+      const ws = new WebSocket(`${protocol}//${wsHost}/ws/alerts/?token=${encodeURIComponent(token)}`);
 
       ws.onopen = () => {
         setWsConnected(true);
@@ -235,7 +237,7 @@ function CrisisAlertPage() {
       setLastRefresh(new Date());
     } catch (err: unknown) {
       setHasError(true);
-      setErrorMessage(err instanceof Error ? err.message : '未知错误');
+      setErrorMessage(toChineseErrorMessage(err instanceof Error ? err.message : undefined, '未知错误'));
     } finally {
       setIsLoading(false);
     }

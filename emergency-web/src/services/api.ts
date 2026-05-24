@@ -1,5 +1,6 @@
 import { createApiClient, createLocalStorageAdapter } from '@mental-chat/shared'
 import type { CrisisAlert, PaginatedResponse } from '../types/crisis'
+import { toChineseErrorMessage } from '../utils/errorMessage'
 
 const apiClient = createApiClient({
   baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000',
@@ -16,7 +17,7 @@ export async function loginEmergency(username: string, password: string): Promis
   const response = await apiClient.post('/api/auth/login', { username, password })
   const { tokens, user } = response.data
   if (user.role !== 'admin' && user.role !== 'professional') {
-    throw new Error('Only admin or professional accounts can access the emergency dashboard.')
+    throw new Error(toChineseErrorMessage('Only admin or professional accounts can access the emergency dashboard.'))
   }
   localStorage.setItem('emergency_token', tokens.access)
   localStorage.setItem('emergency_refresh_token', tokens.refresh)

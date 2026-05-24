@@ -1,6 +1,11 @@
 import json
+import ipaddress
 import logging
+import re
+import socket
 import uuid
+from html.parser import HTMLParser
+from urllib.parse import urlparse
 
 import httpx
 import requests as http_requests
@@ -13,6 +18,7 @@ from django.db import models
 from django.db.models import Avg
 from rest_framework import generics, permissions, status
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -62,6 +68,8 @@ CSV_EXPORT_MAX_ROWS = 5000
 DASHBOARD_CACHE_TTL = 60  # seconds
 CRISIS_STATS_CACHE_TTL = 30
 RECOVERY_STATS_CACHE_TTL = 300  # 5 minutes
+ARTICLE_PARSE_MAX_BYTES = 1024 * 1024
+ARTICLE_PARSE_TIMEOUT = 10
 
 
 # ── Throttle classes — Phase 1.7 ─────────────────────────────────────────────
@@ -101,18 +109,155 @@ def _verify_patient_access(user, patient_id):
     if user.role == "professional":
         if not PatientAssignment.objects.filter(professional=user, patient_id=patient_id).exists():
             return False, Response(
-                {"detail": "You are not assigned to this patient."},
+                {"detail": "您没有被分配到该患者。"},
                 status=status.HTTP_403_FORBIDDEN,
             )
         return True, None
     if user.role == "supporter":
         if not SupporterLink.objects.filter(supporter=user, patient_id=patient_id).exists():
             return False, Response(
-                {"detail": "You are not linked to this patient."},
+                {"detail": "您尚未关联该患者。"},
                 status=status.HTTP_403_FORBIDDEN,
             )
         return True, None
-    return False, Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+    return False, Response({"detail": "没有操作权限。"}, status=status.HTTP_403_FORBIDDEN)
+
+
+def _normalize_article_text(text):
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+class _ArticleHTMLParser(HTMLParser):
+    """Extract basic article metadata and paragraph text from HTML."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.title = ""
+        self.summary = ""
+        self._tag_stack = []
+        self._title_parts = []
+        self._paragraphs = []
+        self._current_paragraph = []
+        self._fallback_blocks = []
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        self._tag_stack.append(tag)
+        attr_map = {k.lower(): (v or "") for k, v in attrs}
+        if tag == "meta":
+            name = attr_map.get("name", "").lower()
+            prop = attr_map.get("property", "").lower()
+            content = attr_map.get("content", "").strip()
+            if content and not self.summary and (name == "description" or prop == "og:description"):
+                self.summary = content
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag == "p" and self._current_paragraph:
+            text = _normalize_article_text(" ".join(self._current_paragraph))
+            if len(text) >= 20:
+                self._paragraphs.append(text)
+            self._current_paragraph = []
+        for index in range(len(self._tag_stack) - 1, -1, -1):
+            if self._tag_stack[index] == tag:
+                self._tag_stack = self._tag_stack[:index]
+                break
+
+    def handle_data(self, data):
+        if not data or any(tag in self._tag_stack for tag in ("script", "style", "noscript")):
+            return
+        text = data.strip()
+        if not text:
+            return
+        if self._tag_stack and self._tag_stack[-1] == "title":
+            self._title_parts.append(text)
+        if "p" in self._tag_stack:
+            self._current_paragraph.append(text)
+        elif len(text) >= 30 and not any(tag in self._tag_stack for tag in ("nav", "header", "footer", "button", "a")):
+            self._fallback_blocks.append(text)
+
+    def parsed(self):
+        content = "\n\n".join(self._paragraphs)
+        if not content:
+            deduped_blocks = []
+            seen = set()
+            for block in self._fallback_blocks:
+                normalized = _normalize_article_text(block)
+                if normalized and normalized not in seen:
+                    seen.add(normalized)
+                    deduped_blocks.append(normalized)
+            content = "\n\n".join(deduped_blocks)
+        return {
+            "title": _normalize_article_text(" ".join(self._title_parts))[:200],
+            "summary": _normalize_article_text(self.summary)[:1000],
+            "content": content[:20000],
+        }
+
+
+def _is_public_http_url(url):
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    hostname = parsed.hostname.strip().lower()
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        return False
+    try:
+        addr_infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return False
+    for info in addr_infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            return False
+    return True
+
+
+def _fetch_article_html(url):
+    headers = {
+        "User-Agent": "MentalChatAdmin/1.0 (+article-url-parser)",
+        "Accept": "text/html,application/xhtml+xml",
+    }
+    current_url = url
+    for _ in range(5):
+        if not _is_public_http_url(current_url):
+            raise ValueError("URL does not point to a public HTTP page")
+        with http_requests.get(
+            current_url,
+            headers=headers,
+            timeout=ARTICLE_PARSE_TIMEOUT,
+            allow_redirects=False,
+            stream=True,
+        ) as resp:
+            if resp.is_redirect:
+                redirect_url = resp.headers.get("location")
+                if not redirect_url:
+                    raise ValueError("Redirect target missing")
+                current_url = http_requests.compat.urljoin(current_url, redirect_url)
+                continue
+            resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "")
+            if "text/html" not in content_type and "application/xhtml+xml" not in content_type:
+                raise ValueError("URL does not point to an HTML page")
+            chunks = []
+            total = 0
+            for chunk in resp.iter_content(chunk_size=16384):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > ARTICLE_PARSE_MAX_BYTES:
+                    break
+                chunks.append(chunk)
+            raw = b"".join(chunks)
+            encoding = resp.encoding or resp.apparent_encoding or "utf-8"
+            return raw.decode(encoding, errors="replace")
+    raise ValueError("Too many redirects")
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
@@ -194,7 +339,7 @@ def login(request):
 
     if user is None or not user.check_password(password):
         return Response(
-            {"detail": "Invalid credentials."},
+            {"detail": "用户名或密码错误。"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
 
@@ -263,7 +408,7 @@ class MoodEntryListCreateView(generics.ListCreateAPIView):
     def create(self, request, *args, **kwargs):
         if request.user.role != "patient":
             return Response(
-                {"detail": "Only patients can create mood entries."},
+                {"detail": "只有患者可以创建情绪记录。"},
                 status=status.HTTP_403_FORBIDDEN,
             )
         return super().create(request, *args, **kwargs)
@@ -467,11 +612,11 @@ def chat_message_feedback(request, message_id):
     try:
         message = ChatMessage.objects.get(pk=message_id, user=request.user, is_ai_response=True)
     except ChatMessage.DoesNotExist:
-        return Response({"detail": "Message not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"detail": "消息不存在。"}, status=status.HTTP_404_NOT_FOUND)
 
     is_positive = request.data.get("is_positive")
     if is_positive is None:
-        return Response({"detail": "is_positive is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "缺少反馈结果。"}, status=status.HTTP_400_BAD_REQUEST)
 
     feedback, created = ChatFeedback.objects.update_or_create(
         message=message,
@@ -504,18 +649,18 @@ async def send_message_stream(request):
 
     auth = await _authenticate()
     if auth is None:
-        return JsonResponse({"detail": "Authentication required"}, status=401)
+        return JsonResponse({"detail": "请先登录。"}, status=401)
     user, _token = auth
 
     # Parse body
     try:
         data = json.loads(request.body.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return JsonResponse({"detail": "Invalid JSON"}, status=400)
+        return JsonResponse({"detail": "请求数据格式不正确。"}, status=400)
 
     content = (data.get("content") or "").strip()
     if not content:
-        return JsonResponse({"detail": "content is required"}, status=400)
+        return JsonResponse({"detail": "请输入消息内容。"}, status=400)
     session_id = data.get("session_id") or uuid.uuid4()
 
     @sync_to_async
@@ -614,6 +759,33 @@ class CrisisAlertCreateView(generics.CreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
     queryset = CrisisAlert.objects.all()
 
+    def perform_create(self, serializer):
+        target_user = serializer.validated_data.get("user")
+
+        if self.request.user.role == "professional":
+            if not target_user:
+                raise PermissionDenied("需要指定所负责的患者。")
+            if target_user.role != "patient":
+                raise PermissionDenied("只能为患者创建危机告警。")
+            if not PatientAssignment.objects.filter(
+                professional=self.request.user, patient=target_user
+            ).exists():
+                raise PermissionDenied("只能为已分配的患者创建危机告警。")
+            serializer.save(user=target_user)
+            return
+
+        if self.request.user.role == "admin":
+            if not target_user:
+                raise PermissionDenied("需要指定患者。")
+            if target_user.role != "patient":
+                raise PermissionDenied("只能为患者创建危机告警。")
+            serializer.save(user=target_user)
+            return
+
+        if target_user and target_user != self.request.user:
+            raise PermissionDenied("只能为当前登录账号创建危机告警。")
+        serializer.save(user=self.request.user)
+
 
 class ActiveCrisisAlertListView(generics.ListAPIView):
     """List all active/acknowledged crisis alerts. Requires admin/professional."""
@@ -644,7 +816,7 @@ def crisis_alert_update_status(request, pk):
         alert = CrisisAlert.objects.get(pk=pk)
     except CrisisAlert.DoesNotExist:
         return Response(
-            {"detail": "Alert not found."},
+            {"detail": "告警不存在。"},
             status=status.HTTP_404_NOT_FOUND,
         )
 
@@ -675,7 +847,7 @@ def crisis_alert_update_status(request, pk):
             alert.handled_by = request.user
     else:
         return Response(
-            {"detail": f"Cannot transition from '{alert.status}' to '{new_status}'."},
+            {"detail": "当前告警状态不能切换到目标状态。"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -794,7 +966,7 @@ class PatientListView(generics.ListAPIView):
 def patient_status_summary(request, pk):
     if request.user.role not in ("admin", "professional", "supporter"):
         return Response(
-            {"detail": "Permission denied."},
+            {"detail": "没有操作权限。"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -807,7 +979,7 @@ def patient_status_summary(request, pk):
         patient = User.objects.get(pk=pk, role="patient")
     except User.DoesNotExist:
         return Response(
-            {"detail": "Patient not found."},
+            {"detail": "患者不存在。"},
             status=status.HTTP_404_NOT_FOUND,
         )
 
@@ -845,7 +1017,7 @@ def patient_detail(request, pk):
     try:
         patient = User.objects.get(pk=pk, role="patient")
     except User.DoesNotExist:
-        return Response({"detail": "Patient not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"detail": "患者不存在。"}, status=status.HTTP_404_NOT_FOUND)
 
     # Mood entries (last 30) + aggregation in single query
     mood_entries = MoodEntry.objects.filter(user=patient).order_by("-created_at")[:30]
@@ -954,7 +1126,7 @@ def admin_assignments(request):
         patient_id=patient_id, professional_id=professional_id
     ).exists():
         return Response(
-            {"detail": "This assignment already exists."},
+            {"detail": "该分配关系已存在。"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -1033,7 +1205,7 @@ def admin_user_update(request, pk):
     try:
         user = User.objects.get(pk=pk)
     except User.DoesNotExist:
-        return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"detail": "用户不存在。"}, status=status.HTTP_404_NOT_FOUND)
 
     if "is_active" in request.data:
         user.is_active = request.data["is_active"]
@@ -1129,7 +1301,7 @@ def admin_assignment_delete(request, pk):
         assignment = PatientAssignment.objects.get(pk=pk)
     except PatientAssignment.DoesNotExist:
         return Response(
-            {"detail": "Assignment not found."},
+            {"detail": "分配关系不存在。"},
             status=status.HTTP_404_NOT_FOUND,
         )
     assignment.delete()
@@ -1231,10 +1403,10 @@ def recovery_task_complete(request, pk):
     try:
         task = RecoveryTask.objects.get(pk=pk, user=request.user)
     except RecoveryTask.DoesNotExist:
-        return Response({"detail": "Task not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"detail": "任务不存在或不属于当前账号。"}, status=status.HTTP_404_NOT_FOUND)
 
     if task.is_completed:
-        return Response({"detail": "Already completed."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "任务已完成。"}, status=status.HTTP_400_BAD_REQUEST)
 
     from django.utils import timezone
     task.is_completed = True
@@ -1244,12 +1416,16 @@ def recovery_task_complete(request, pk):
     # Invalidate recovery stats cache
     cache.delete(f"recovery_stats_{request.user.id}")
 
-    # Award badges async if possible, else sync
-    try:
-        from .tasks import award_badges_async
-        award_badges_async.delay(request.user.id)
-    except Exception:
+    # In local DEBUG mode Celery/Redis is usually not running. Calling .delay()
+    # can block long enough for the HTTP request to be killed after the DB save.
+    if settings.DEBUG and not settings.CELERY_BROKER_URL.startswith("memory://"):
         _check_and_award_badges(request.user)
+    else:
+        try:
+            from .tasks import award_badges_async
+            award_badges_async.delay(request.user.id)
+        except Exception:
+            _check_and_award_badges(request.user)
 
     return Response(RecoveryTaskSerializer(task).data)
 
@@ -1306,21 +1482,21 @@ def supporter_linked_patients(request):
 def supporter_link_patient(request):
     """Link a supporter to a patient by patient username or phone."""
     if request.user.role != "supporter":
-        return Response({"detail": "Only supporters can link patients."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"detail": "只有守护者可以关联患者。"}, status=status.HTTP_403_FORBIDDEN)
 
     identifier = request.data.get("identifier", "").strip()
     if not identifier:
-        return Response({"detail": "Please provide patient username or phone."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "请输入患者用户名或手机号。"}, status=status.HTTP_400_BAD_REQUEST)
 
     patient = (
         User.objects.filter(username=identifier, role="patient").first()
         or User.objects.filter(phone=identifier, role="patient").first()
     )
     if not patient:
-        return Response({"detail": "Patient not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"detail": "患者不存在。"}, status=status.HTTP_404_NOT_FOUND)
 
     if SupporterLink.objects.filter(supporter=request.user, patient=patient).exists():
-        return Response({"detail": "Already linked."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "已经关联过该患者。"}, status=status.HTTP_400_BAD_REQUEST)
 
     link = SupporterLink.objects.create(supporter=request.user, patient=patient)
     result = SupporterLink.objects.select_related("supporter", "patient").get(pk=link.pk)
@@ -1332,15 +1508,15 @@ def supporter_link_patient(request):
 def send_encouragement(request):
     """Send an encouragement message to a patient."""
     if request.user.role != "supporter":
-        return Response({"detail": "Only supporters can send encouragement."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"detail": "只有守护者可以发送鼓励消息。"}, status=status.HTTP_403_FORBIDDEN)
 
     receiver_id = request.data.get("receiver_id")
     content = request.data.get("content", "").strip()
     if not receiver_id or not content:
-        return Response({"detail": "receiver_id and content are required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "请选择接收人并填写内容。"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not SupporterLink.objects.filter(supporter=request.user, patient_id=receiver_id).exists():
-        return Response({"detail": "You are not linked to this patient."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"detail": "您尚未关联该患者。"}, status=status.HTTP_403_FORBIDDEN)
 
     msg = EncouragementMessage.objects.create(
         sender=request.user,
@@ -1377,7 +1553,7 @@ def unread_encouragement_count(request):
 def patient_linked_supporters(request):
     """List supporters linked to the current patient (mirrors supporter_linked_patients)."""
     if request.user.role != "patient":
-        return Response({"detail": "Only patients can list their supporters."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"detail": "只有患者可以查看自己的守护者。"}, status=status.HTTP_403_FORBIDDEN)
     links = SupporterLink.objects.filter(patient=request.user).select_related("supporter", "patient")
     return Response(SupporterLinkSerializer(links, many=True).data)
 
@@ -1387,11 +1563,11 @@ def _verify_chat_pair(user, peer_id):
     try:
         peer = User.objects.get(id=peer_id)
     except (User.DoesNotExist, ValueError):
-        return None, Response({"detail": "Peer not found."}, status=status.HTTP_404_NOT_FOUND)
+        return None, Response({"detail": "聊天对象不存在。"}, status=status.HTTP_404_NOT_FOUND)
     linked = SupporterLink.objects.filter(supporter=user, patient=peer).exists() or \
         SupporterLink.objects.filter(supporter=peer, patient=user).exists()
     if not linked:
-        return None, Response({"detail": "Not linked to this peer."}, status=status.HTTP_403_FORBIDDEN)
+        return None, Response({"detail": "您尚未关联该聊天对象。"}, status=status.HTTP_403_FORBIDDEN)
     return peer, None
 
 
@@ -1421,7 +1597,7 @@ def chat_send(request, peer_id):
         return err
     content = (request.data.get("content") or "").strip()
     if not content:
-        return Response({"detail": "content is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "请输入消息内容。"}, status=status.HTTP_400_BAD_REQUEST)
     msg = EncouragementMessage.objects.create(
         sender=request.user, receiver=peer, content=content,
     )
@@ -1429,6 +1605,32 @@ def chat_send(request, peer_id):
 
 
 # ── Articles ──────────────────────────────────────────────────────────────
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated, IsAdminOrProfessional])
+def parse_article_url(request):
+    url = (request.data.get("url") or "").strip()
+    if not url:
+        return Response({"detail": "请提供要解析的链接。"}, status=status.HTTP_400_BAD_REQUEST)
+    if not _is_public_http_url(url):
+        return Response({"detail": "只支持可公开访问的 http/https 链接。"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        html = _fetch_article_html(url)
+        parser = _ArticleHTMLParser()
+        parser.feed(html)
+        data = parser.parsed()
+    except http_requests.RequestException:
+        logger.warning("Failed to fetch article URL: %s", url, exc_info=True)
+        return Response({"detail": "链接内容获取失败，请检查链接是否可访问。"}, status=status.HTTP_400_BAD_GATEWAY)
+    except Exception:
+        logger.warning("Failed to parse article URL: %s", url, exc_info=True)
+        return Response({"detail": "链接内容解析失败。"}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+    if not data["title"] and not data["summary"] and not data["content"]:
+        return Response({"detail": "未能从该链接解析出标题、摘要或正文。"}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+    return Response(data)
 
 
 @api_view(["GET", "POST"])
@@ -1449,7 +1651,7 @@ def article_list(request):
         return Response(ArticleSerializer(qs[:100], many=True).data)
 
     if request.user.role not in ("admin", "professional"):
-        return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"detail": "没有操作权限。"}, status=status.HTTP_403_FORBIDDEN)
     serializer = ArticleSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     serializer.save(author=request.user)
@@ -1463,15 +1665,15 @@ def article_detail(request, pk):
     try:
         article = Article.objects.select_related("author").get(pk=pk)
     except Article.DoesNotExist:
-        return Response({"detail": "Article not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"detail": "文章不存在。"}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == "GET":
         if request.user.role == "patient" and not article.is_published:
-            return Response({"detail": "Article not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"detail": "文章不存在。"}, status=status.HTTP_404_NOT_FOUND)
         return Response(ArticleSerializer(article).data)
 
     if request.user.role not in ("admin", "professional"):
-        return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"detail": "没有操作权限。"}, status=status.HTTP_403_FORBIDDEN)
 
     if request.method == "DELETE":
         article.delete()
@@ -1499,7 +1701,7 @@ def delete_my_account(request):
     user.is_active = False
     user.set_unusable_password()
     user.save()
-    return Response({"detail": "Account anonymized."}, status=status.HTTP_200_OK)
+    return Response({"detail": "账号已注销。"}, status=status.HTTP_200_OK)
 
 
 # ── CSV export ─────────────────────────────────────────────────────────────
@@ -1591,7 +1793,7 @@ def tts_proxy(request):
     text = request.data.get("text", "")
     if not text:
         return Response(
-            {"detail": "Missing 'text' field."},
+            {"detail": "请输入要朗读的文本。"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -1612,6 +1814,6 @@ def tts_proxy(request):
     except Exception:
         logger.warning("TTS proxy failed")
         return Response(
-            {"detail": "TTS service unavailable."},
+            {"detail": "语音服务暂时不可用。"},
             status=status.HTTP_502_BAD_GATEWAY,
         )

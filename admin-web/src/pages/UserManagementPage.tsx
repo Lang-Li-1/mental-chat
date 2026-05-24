@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { getAdminUsers, updateAdminUser, createAdminUser } from '../services/patientService';
 import type { Patient } from '../types';
+import { toChineseErrorMessage } from '../utils/errorMessage';
 
 const roleLabels: Record<string, string> = {
   patient: '患者',
@@ -122,7 +123,7 @@ function UserManagementPage() {
       setShowCreate(false);
       await fetchUsers();
     } catch (err: any) {
-      setCreateError(err?.response?.data?.detail || '创建失败');
+      setCreateError(toChineseErrorMessage(err?.response?.data?.detail, '创建失败'));
     } finally {
       setCreating(false);
     }

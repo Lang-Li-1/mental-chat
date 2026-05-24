@@ -46,6 +46,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { loginEmergency } from '../services/api'
+import { toChineseErrorMessage } from '../utils/errorMessage'
 
 const emit = defineEmits<{ (e: 'login-success'): void }>()
 
@@ -57,14 +58,24 @@ const errorMsg = ref('')
 async function handleLogin() {
   isLoading.value = true
   errorMsg.value = ''
+  if (!username.value.trim() || !password.value.trim()) {
+    errorMsg.value = '请输入用户名和密码'
+    isLoading.value = false
+    return
+  }
+  if (password.value.length < 8) {
+    errorMsg.value = '密码至少 8 位，请检查后再试'
+    isLoading.value = false
+    return
+  }
   try {
     await loginEmergency(username.value, password.value)
     emit('login-success')
   } catch (err: unknown) {
     if (err instanceof Error) {
-      errorMsg.value = err.message
+      errorMsg.value = toChineseErrorMessage(err.message, '登录失败，请检查用户名和密码是否正确，密码至少 8 位')
     } else {
-      errorMsg.value = '登录失败，请检查用户名和密码'
+      errorMsg.value = '登录失败，请检查用户名和密码是否正确，密码至少 8 位'
     }
   } finally {
     isLoading.value = false

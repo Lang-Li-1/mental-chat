@@ -1,43 +1,43 @@
-import React, { useContext } from 'react';
-import { Text } from 'react-native';
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import React, { useContext } from 'react'
+import { Text } from 'react-native'
+import { createBottomTabNavigator } from '@react-navigation/bottom-tabs'
 
-import { AuthContext } from '../context/AuthContext';
-import MoodScreen from '../screens/MoodScreen';
-import ChatScreen from '../screens/ChatScreen';
-import AssessmentScreen from '../screens/AssessmentScreen';
-import RecoveryPlanScreen from '../screens/RecoveryPlanScreen';
-import ArticleScreen from '../screens/ArticleScreen';
-import ProfileScreen from '../screens/ProfileScreen';
-import SupporterHomeScreen from '../screens/SupporterHomeScreen';
-import EncouragementScreen from '../screens/EncouragementScreen';
+import { AuthContext } from '../context/AuthContext'
+import MoodScreen from '../screens/MoodScreen'
+import ChatScreen from '../screens/ChatScreen'
+import RecoveryPlanScreen from '../screens/RecoveryPlanScreen'
+import ArticleScreen from '../screens/ArticleScreen'
+import ProfileScreen from '../screens/ProfileScreen'
+import SupporterHomeScreen from '../screens/SupporterHomeScreen'
+import EncouragementScreen from '../screens/EncouragementScreen'
 
 export type HomeTabParamList = {
-  Mood: undefined;
-  Chat: undefined;
-  Recovery: undefined;
-  Articles: undefined;
-  Assessment: undefined;
-  Profile: undefined;
-  SupporterHome: undefined;
-  Encouragement: undefined;
-};
+  Mood: undefined
+  Chat: undefined
+  Recovery: undefined
+  Articles: undefined
+  Profile: undefined
+  SupporterHome: undefined
+  Encouragement: undefined
+}
 
-const Tab = createBottomTabNavigator<HomeTabParamList>();
+const Tab = createBottomTabNavigator<HomeTabParamList>()
 
-const tabIcon = (emoji: string) => ({ focused }: { focused: boolean }) => (
-  <Text style={{ fontSize: focused ? 22 : 20, opacity: focused ? 1 : 0.65 }}>
-    {emoji}
-  </Text>
-);
+const tabIcon =
+  (emoji: string) =>
+  ({ focused }: { focused: boolean }) => (
+    <Text style={{ fontSize: focused ? 22 : 20, opacity: focused ? 1 : 0.65 }}>
+      {emoji}
+    </Text>
+  )
 
 export default function HomeTabs() {
-  const { userRole } = useContext(AuthContext);
+  const { userRole } = useContext(AuthContext)
 
-  const isSupporter = userRole === 'supporter';
+  const isSupporter = userRole === 'supporter'
 
-  const headerColor = isSupporter ? '#5A6FC2' : '#3D7A5F';
-  const activeTabColor = isSupporter ? '#5A6FC2' : '#3D7A5F';
+  const headerColor = isSupporter ? '#5A6FC2' : '#3D7A5F'
+  const activeTabColor = isSupporter ? '#5A6FC2' : '#3D7A5F'
 
   return (
     <Tab.Navigator
@@ -77,7 +77,7 @@ export default function HomeTabs() {
             component={SupporterHomeScreen}
             options={{
               title: '守护者中心',
-              tabBarLabel: '天使状态',
+              tabBarLabel: '患者状态',
               tabBarIcon: tabIcon('👥'),
             }}
           />
@@ -159,5 +159,5 @@ export default function HomeTabs() {
         </>
       )}
     </Tab.Navigator>
-  );
+  )
 }

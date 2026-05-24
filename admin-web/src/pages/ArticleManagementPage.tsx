@@ -1,19 +1,7 @@
 import { useEffect, useState } from 'react';
-import { getArticles, createArticle, updateArticle, deleteArticle, type Article } from '../services/patientService';
-
-const CATEGORIES: { value: string; label: string }[] = [
-  { value: 'general', label: '综合' },
-  { value: 'depression', label: '抑郁症' },
-  { value: 'anxiety', label: '焦虑症' },
-  { value: 'sleep', label: '睡眠' },
-  { value: 'stress', label: '压力管理' },
-  { value: 'relationship', label: '人际关系' },
-  { value: 'self_care', label: '自我关怀' },
-];
-
-function categoryLabel(v: string): string {
-  return CATEGORIES.find(c => c.value === v)?.label || v;
-}
+import { ARTICLE_CATEGORIES, getArticleCategoryLabel } from '@mental-chat/shared';
+import { getArticles, createArticle, updateArticle, deleteArticle, parseArticleUrl, type Article } from '../services/patientService';
+import { toChineseErrorMessage } from '../utils/errorMessage';
 
 function formatTime(t: string): string {
   return new Date(t).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
@@ -30,6 +18,8 @@ function ArticleManagementPage() {
   const [editId, setEditId] = useState<number | null>(null);
   const [form, setForm] = useState({ title: '', summary: '', content: '', url: '', category: 'general', is_published: true });
   const [saving, setSaving] = useState(false);
+  const [parsingUrl, setParsingUrl] = useState(false);
+  const [parseMessage, setParseMessage] = useState('');
 
   const fetchArticles = async () => {
     setLoading(true);
@@ -48,13 +38,35 @@ function ArticleManagementPage() {
   const openNew = () => {
     setEditId(null);
     setForm({ title: '', summary: '', content: '', url: '', category: 'general', is_published: true });
+    setParseMessage('');
     setEditing(true);
   };
 
   const openEdit = (a: Article) => {
     setEditId(a.id);
     setForm({ title: a.title, summary: a.summary, content: a.content, url: a.url || '', category: a.category, is_published: a.is_published });
+    setParseMessage('');
     setEditing(true);
+  };
+
+  const handleParseUrl = async () => {
+    if (!form.url.trim()) return;
+    setParsingUrl(true);
+    setParseMessage('');
+    try {
+      const data = await parseArticleUrl(form.url.trim());
+      setForm(f => ({
+        ...f,
+        title: f.title.trim() ? f.title : data.title,
+        summary: f.summary.trim() ? f.summary : data.summary,
+        content: f.content.trim() ? f.content : data.content,
+      }));
+      setParseMessage('解析完成，已自动填充空白字段。');
+    } catch (err) {
+      setParseMessage(toChineseErrorMessage(err));
+    } finally {
+      setParsingUrl(false);
+    }
   };
 
   const handleSave = async () => {
@@ -109,14 +121,25 @@ function ArticleManagementPage() {
           </div>
           <div className="form-group">
             <label>互联网链接（可选）</label>
-            <input value={form.url} onChange={e => setForm(f => ({ ...f, url: e.target.value }))} placeholder="https://example.com/article" />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input value={form.url} onChange={e => setForm(f => ({ ...f, url: e.target.value }))} placeholder="https://example.com/article" />
+              <button
+                className="btn btn-back"
+                onClick={handleParseUrl}
+                disabled={parsingUrl || !form.url.trim()}
+                style={{ width: 'auto', whiteSpace: 'nowrap', padding: '10px 16px' }}
+              >
+                {parsingUrl ? '解析中...' : '解析链接'}
+              </button>
+            </div>
             {form.url && <span style={{ fontSize: 12, color: '#6b7280', marginTop: 4, display: 'block' }}>填写链接后，用户将被引导到外部文章页面阅读</span>}
+            {parseMessage && <span style={{ fontSize: 12, color: parseMessage.includes('完成') ? '#047857' : '#dc2626', marginTop: 4, display: 'block' }}>{parseMessage}</span>}
           </div>
           <div className="art-editor-row">
             <div className="form-group" style={{ flex: 1 }}>
               <label>分类</label>
               <select value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}>
-                {CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                {ARTICLE_CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
               </select>
             </div>
             <div className="form-group" style={{ flex: 1 }}>
@@ -181,7 +204,7 @@ function ArticleManagementPage() {
         <div className="iv-filter-row">
           <select className="iv-cat-select" value={filterCategory} onChange={e => setFilterCategory(e.target.value)}>
             <option value="">全部分类</option>
-            {CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+            {ARTICLE_CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
           </select>
         </div>
       </div>
@@ -198,7 +221,7 @@ function ArticleManagementPage() {
             <div key={a.id} className="art-card">
               <div className="art-card-header">
                 <div className="art-card-meta">
-                  <span className="art-card-cat">{categoryLabel(a.category)}</span>
+                  <span className="art-card-cat">{getArticleCategoryLabel(a.category)}</span>
                   {a.url && <span className="art-card-cat" style={{ backgroundColor: '#dbeafe', color: '#2563eb' }}>外部链接</span>}
                   {!a.is_published && <span className="art-card-draft">草稿</span>}
                 </div>

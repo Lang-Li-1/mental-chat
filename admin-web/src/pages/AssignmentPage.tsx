@@ -8,6 +8,7 @@ import {
   deleteAssignment,
 } from '../services/patientService';
 import type { Patient, Assignment } from '../types';
+import { toChineseErrorMessage } from '../utils/errorMessage';
 
 function AssignmentPage() {
   const navigate = useNavigate();
@@ -68,7 +69,7 @@ function AssignmentPage() {
     } catch (err: unknown) {
       if (err && typeof err === 'object' && 'response' in err) {
         const axiosErr = err as { response?: { data?: { detail?: string } } };
-        setSubmitError(axiosErr.response?.data?.detail || '创建分配失败');
+        setSubmitError(toChineseErrorMessage(axiosErr.response?.data?.detail, '创建分配失败'));
       } else {
         setSubmitError('创建分配失败');
       }

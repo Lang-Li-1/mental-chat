@@ -23,6 +23,7 @@ function showAlert(title: string, message: string) {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AuthContext } from '../context/AuthContext';
 import { authAPI } from '../services/api';
+import { toChineseErrorMessage } from '../utils/errorMessage';
 
 const { width } = Dimensions.get('window');
 const isWide = width > 600;
@@ -33,6 +34,7 @@ export default function LoginScreen() {
   const [isRegister, setIsRegister] = useState(false);
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [selectedRole, setSelectedRole] = useState<'patient' | 'supporter'>('patient');
   const [loading, setLoading] = useState(false);
@@ -44,8 +46,12 @@ export default function LoginScreen() {
       showAlert('提示', '请填写用户名和密码');
       return;
     }
-    if (isRegister && !email.trim()) {
-      showAlert('提示', '请填写邮箱');
+    if (password.length < 8) {
+      showAlert('提示', '密码至少 8 位，请检查后再试。');
+      return;
+    }
+    if (isRegister && !email.trim() && !phone.trim()) {
+      showAlert('提示', '请填写邮箱或手机号');
       return;
     }
 
@@ -55,7 +61,8 @@ export default function LoginScreen() {
       if (isRegister) {
         response = await authAPI.register({
           username: username.trim(),
-          email: email.trim(),
+          email: email.trim() || undefined,
+          phone: phone.trim() || undefined,
           password: password,
           role: selectedRole,
         });
@@ -77,10 +84,14 @@ export default function LoginScreen() {
         error.response?.data?.detail ||
         error.response?.data?.username?.[0] ||
         error.response?.data?.email?.[0] ||
+        error.response?.data?.phone?.[0] ||
         error.response?.data?.password?.[0] ||
         error.response?.data?.non_field_errors?.[0] ||
         '操作失败，请检查网络连接';
-      showAlert('错误', String(message));
+      const fallback = isRegister
+        ? '注册失败，请检查密码至少 8 位，并确认网络连接正常。'
+        : '登录失败，请检查用户名和密码是否正确，密码至少 8 位。';
+      showAlert('错误', toChineseErrorMessage(message, fallback));
     } finally {
       setLoading(false);
     }
@@ -157,7 +168,7 @@ export default function LoginScreen() {
                   >
                     <Text style={styles.roleOptionEmoji}>{'🌱'}</Text>
                     <Text style={[styles.roleOptionText, selectedRole === 'patient' && styles.roleOptionTextActive]}>
-                      {'天使'}
+                      {'患者'}
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
@@ -194,6 +205,32 @@ export default function LoginScreen() {
                     autoCapitalize="none"
                     autoCorrect={false}
                     onFocus={() => setFocusedField('email')}
+                    onBlur={() => setFocusedField(null)}
+                  />
+                </View>
+              </View>
+            )}
+
+            {isRegister && (
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>{'手机号'}</Text>
+                <View
+                  style={[
+                    styles.inputWrapper,
+                    focusedField === 'phone' && styles.inputWrapperFocused,
+                  ]}
+                >
+                  <Text style={styles.inputIcon}>{'☎️'}</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder={'请输入手机号（邮箱或手机号至少填一个）'}
+                    placeholderTextColor="#B8C4D0"
+                    value={phone}
+                    onChangeText={setPhone}
+                    keyboardType="phone-pad"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    onFocus={() => setFocusedField('phone')}
                     onBlur={() => setFocusedField(null)}
                   />
                 </View>

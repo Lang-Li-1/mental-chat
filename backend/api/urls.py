@@ -110,6 +110,7 @@ urlpatterns = [
         name="admin-assignment-delete",
     ),
     # Articles
+    path("articles/parse_url", views.parse_article_url, name="article-parse-url"),
     path("articles", views.article_list, name="article-list"),
     path("articles/<int:pk>", views.article_detail, name="article-detail"),
     # CSV export

@@ -22,7 +22,7 @@ function formatDate(dateStr: string): string {
 
 function getRoleLabel(role: string): string {
   const roles: Record<string, string> = {
-    patient: '天使',
+    patient: '患者',
     professional: '专业人士',
     supporter: '守护者',
   };

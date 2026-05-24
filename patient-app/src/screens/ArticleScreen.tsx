@@ -10,22 +10,13 @@ import {
   Linking,
   Platform,
 } from 'react-native';
+import { ARTICLE_CATEGORIES, getArticleCategoryLabel } from '@mental-chat/shared';
 import { articleAPI, ArticleItem } from '../services/api';
 
 const CATEGORIES: { value: string; label: string }[] = [
   { value: '', label: '全部' },
-  { value: 'depression', label: '抑郁症' },
-  { value: 'anxiety', label: '焦虑症' },
-  { value: 'sleep', label: '睡眠' },
-  { value: 'stress', label: '压力' },
-  { value: 'relationship', label: '人际' },
-  { value: 'self_care', label: '自我关怀' },
-  { value: 'general', label: '综合' },
+  ...ARTICLE_CATEGORIES,
 ];
-
-function categoryLabel(v: string): string {
-  return CATEGORIES.find(c => c.value === v)?.label || v;
-}
 
 export default function ArticleScreen() {
   const [articles, setArticles] = useState<ArticleItem[]>([]);
@@ -64,7 +55,7 @@ export default function ArticleScreen() {
         </TouchableOpacity>
         <View style={styles.articleDetail}>
           <View style={styles.catBadge}>
-            <Text style={styles.catBadgeText}>{categoryLabel(selectedArticle.category)}</Text>
+            <Text style={styles.catBadgeText}>{getArticleCategoryLabel(selectedArticle.category)}</Text>
           </View>
           <Text style={styles.articleDetailTitle}>{selectedArticle.title}</Text>
           <Text style={styles.articleDetailMeta}>
@@ -129,7 +120,7 @@ export default function ArticleScreen() {
         }} activeOpacity={0.7}>
           <View style={{ flexDirection: 'row', gap: 6, marginBottom: 8 }}>
             <View style={styles.cardCat}>
-              <Text style={styles.cardCatText}>{categoryLabel(a.category)}</Text>
+              <Text style={styles.cardCatText}>{getArticleCategoryLabel(a.category)}</Text>
             </View>
             {a.url ? (
               <View style={[styles.cardCat, { backgroundColor: 'rgba(37, 99, 235, 0.1)' }]}>

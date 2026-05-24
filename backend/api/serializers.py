@@ -11,6 +11,11 @@ User = get_user_model()
 
 
 class RegisterSerializer(serializers.ModelSerializer):
+    email = serializers.EmailField(
+        required=False,
+        allow_blank=True,
+        error_messages={"invalid": "请输入有效的邮箱地址。"},
+    )
     password = serializers.CharField(write_only=True, min_length=8)
 
     class Meta:
@@ -22,7 +27,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         phone = attrs.get("phone") or ""
         if not email and not phone:
             raise serializers.ValidationError(
-                "At least one of email or phone must be provided."
+                "邮箱和手机号至少填写一个。"
             )
         if not email:
             attrs["email"] = None
@@ -59,7 +64,7 @@ class MoodEntrySerializer(serializers.ModelSerializer):
 
     def validate_mood_score(self, value):
         if not 1 <= value <= 10:
-            raise serializers.ValidationError("mood_score must be between 1 and 10.")
+            raise serializers.ValidationError("情绪分数必须在 1 到 10 之间。")
         return value
 
 
@@ -153,12 +158,12 @@ class AssignmentCreateSerializer(serializers.Serializer):
 
     def validate_patient_id(self, value):
         if not User.objects.filter(pk=value, role="patient").exists():
-            raise serializers.ValidationError("Patient not found.")
+            raise serializers.ValidationError("患者不存在。")
         return value
 
     def validate_professional_id(self, value):
         if not User.objects.filter(pk=value, role="professional").exists():
-            raise serializers.ValidationError("Professional not found.")
+            raise serializers.ValidationError("医生不存在。")
         return value
 
 

@@ -10,6 +10,7 @@ import {
   Platform,
 } from 'react-native';
 import { assessmentAPI, AssessmentResult } from '../services/api';
+import { toChineseErrorMessage } from '../utils/errorMessage';
 
 function showAlert(title: string, message: string) {
   if (Platform.OS === 'web') {
@@ -139,7 +140,7 @@ export default function AssessmentScreen() {
         setScreen('result');
         fetchHistory();
       } catch (err: any) {
-        showAlert('提交失败', err.response?.data?.detail || '请稍后重试');
+        showAlert('提交失败', toChineseErrorMessage(err.response?.data?.detail, '请稍后重试'));
       } finally {
         setSubmitting(false);
       }

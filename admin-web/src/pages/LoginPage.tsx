@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { login, registerProfessional } from '../services/patientService';
+import { toChineseErrorMessage } from '../utils/errorMessage';
 
 type Mode = 'login' | 'register';
 
@@ -40,11 +41,12 @@ function LoginPage() {
       return;
     }
 
+    if (password.length < 8) {
+      setError('密码至少 8 位，请检查后再试');
+      return;
+    }
+
     if (mode === 'register') {
-      if (password.length < 8) {
-        setError('密码至少 8 位');
-        return;
-      }
       if (!email.trim() && !phone.trim()) {
         setError('邮箱和手机号至少填一个');
         return;
@@ -81,9 +83,9 @@ function LoginPage() {
           axiosErr.response?.data?.email?.[0] ||
           axiosErr.response?.data?.password?.[0];
         if (mode === 'login' && status === 401) {
-          setError('用户名或密码错误');
+          setError('用户名或密码错误，请确认密码至少 8 位');
         } else if (detail) {
-          setError(detail);
+          setError(toChineseErrorMessage(detail));
         } else {
           setError(mode === 'login' ? '登录失败，请稍后重试' : '注册失败，请稍后重试');
         }

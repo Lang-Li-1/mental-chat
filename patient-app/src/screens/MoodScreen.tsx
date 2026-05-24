@@ -21,6 +21,7 @@ function showAlert(title: string, message: string) {
   }
 }
 import { moodAPI, MoodEntry } from '../services/api';
+import AssessmentScreen from './AssessmentScreen';
 
 // ── Mood emoji + label mapping ───────────────────────────────────────────────
 
@@ -73,6 +74,7 @@ export default function MoodScreen() {
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [showAssessment, setShowAssessment] = useState(false);
 
   // Trend range state
   const [trendRange, setTrendRange] = useState<'today' | 'month' | 'year' | 'all'>('month');
@@ -234,6 +236,22 @@ export default function MoodScreen() {
         </TouchableOpacity>
       </View>
 
+
+      {/* Assessment Module */}
+      <TouchableOpacity
+        style={styles.assessmentCard}
+        onPress={() => setShowAssessment(true)}
+        activeOpacity={0.82}
+      >
+        <View style={styles.assessmentIcon}>
+          <Text style={styles.assessmentIconText}>📋</Text>
+        </View>
+        <View style={styles.assessmentContent}>
+          <Text style={styles.assessmentTitle}>量表评估</Text>
+          <Text style={styles.assessmentDesc}>完成 PHQ-9 / GAD-7 自测，追踪近期心理状态</Text>
+        </View>
+        <Text style={styles.assessmentArrow}>›</Text>
+      </TouchableOpacity>
       {/* Mood Trend Chart */}
       {entries.length >= 2 && (
         <View style={styles.chartCard}>
@@ -451,36 +469,53 @@ export default function MoodScreen() {
     </>
   );
 
+  if (showAssessment) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.assessmentHeader}>
+          <TouchableOpacity
+            style={styles.assessmentBackButton}
+            onPress={() => setShowAssessment(false)}
+            activeOpacity={0.75}
+          >
+            <Text style={styles.assessmentBackText}>‹ 返回情绪记录</Text>
+          </TouchableOpacity>
+          <Text style={styles.assessmentHeaderTitle}>量表评估</Text>
+        </View>
+        <AssessmentScreen />
+      </View>
+    );
+  }
   return (
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={90}
     >
-      {loading && entries.length === 0 ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#5DA480" />
-          <Text style={styles.loadingText}>加载中...</Text>
-        </View>
-      ) : (
-        <FlatList
-          data={entries}
-          keyExtractor={(item) => item.id.toString()}
-          renderItem={renderEntry}
-          ListHeaderComponent={renderHeader()}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#5DA480" />
-          }
-          ListEmptyComponent={
+      <FlatList
+        data={entries}
+        keyExtractor={(item) => item.id.toString()}
+        renderItem={renderEntry}
+        ListHeaderComponent={renderHeader()}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#5DA480" />
+        }
+        ListEmptyComponent={
+          loading ? (
+            <View style={styles.emptyContainer}>
+              <ActivityIndicator size="large" color="#5DA480" />
+              <Text style={styles.loadingText}>加载中...</Text>
+            </View>
+          ) : (
             <View style={styles.emptyContainer}>
               <Text style={styles.emptyEmoji}>{'📝'}</Text>
               <Text style={styles.emptyText}>{'还没有记录，开始记录您的心情吧'}</Text>
             </View>
-          }
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-        />
-      )}
+          )
+        }
+        contentContainerStyle={styles.listContent}
+        showsVerticalScrollIndicator={false}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -851,6 +886,73 @@ const styles = StyleSheet.create({
   },
 
   // ── History Section ──────────────────────────────────────────────
+  assessmentCard: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 16,
+    marginBottom: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    shadowColor: '#2D4A3E',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    elevation: 3,
+  },
+  assessmentIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    backgroundColor: '#EEF6F1',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  assessmentIconText: {
+    fontSize: 24,
+  },
+  assessmentContent: {
+    flex: 1,
+  },
+  assessmentTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#2D4A3E',
+    marginBottom: 4,
+  },
+  assessmentDesc: {
+    fontSize: 13,
+    color: '#7A8F82',
+    lineHeight: 19,
+  },
+  assessmentArrow: {
+    fontSize: 30,
+    color: '#8FA89B',
+    marginLeft: 10,
+  },
+  assessmentHeader: {
+    backgroundColor: '#3D7A5F',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'web' ? 16 : 48,
+    paddingBottom: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  assessmentBackButton: {
+    paddingVertical: 6,
+    paddingRight: 12,
+  },
+  assessmentBackText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  assessmentHeaderTitle: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '800',
+    marginLeft: 8,
+  },
   historyHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',

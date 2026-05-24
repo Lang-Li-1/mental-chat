@@ -1,5 +1,6 @@
 import api from './api';
 import type { LoginRequest, LoginResponse, Patient, PatientAssignment, PaginatedResponse, MoodEntry, CrisisAlert, Assignment } from '../types';
+import { toChineseErrorMessage } from '../utils/errorMessage';
 
 export async function login(data: LoginRequest): Promise<LoginResponse> {
   const response = await api.post<LoginResponse>('/api/auth/login', data);
@@ -27,14 +28,14 @@ export async function getPatient(id: string): Promise<Patient> {
     // Admin: fetch from admin patients endpoint
     const patients = await getAllPatients();
     const patient = patients.find((p) => p.id === Number(id));
-    if (!patient) throw new Error('Patient not found');
+    if (!patient) throw new Error(toChineseErrorMessage('Patient not found'));
     return patient;
   }
   // Professional: fetch from assignments
   const response = await api.get<PaginatedResponse<PatientAssignment>>('/api/patients');
   const assignment = response.data.results.find((a) => a.patient.id === Number(id));
   if (!assignment) {
-    throw new Error('Patient not found');
+    throw new Error(toChineseErrorMessage('Patient not found'));
   }
   return assignment.patient;
 }
@@ -174,6 +175,11 @@ export async function createArticle(data: { title: string; summary: string; cont
 
 export async function updateArticle(id: number, data: Partial<{ title: string; summary: string; content: string; url: string; category: string; is_published: boolean }>): Promise<Article> {
   const response = await api.put<Article>(`/api/articles/${id}`, data);
+  return response.data;
+}
+
+export async function parseArticleUrl(url: string): Promise<{ title: string; summary: string; content: string }> {
+  const response = await api.post<{ title: string; summary: string; content: string }>('/api/articles/parse_url', { url });
   return response.data;
 }
 

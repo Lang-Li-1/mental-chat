@@ -11,6 +11,7 @@ import {
   Platform,
 } from 'react-native';
 import { recoveryAPI, RecoveryTask, RecoveryBadge, RecoveryStats } from '../services/api';
+import { toChineseErrorMessage } from '../utils/errorMessage';
 
 function showAlert(title: string, message: string) {
   if (Platform.OS === 'web') {
@@ -18,6 +19,10 @@ function showAlert(title: string, message: string) {
   } else {
     Alert.alert(title, message);
   }
+}
+
+function getRecoveryErrorMessage(detail?: string) {
+  return toChineseErrorMessage(detail, '操作失败，请稍后重试。');
 }
 
 const TASK_ICONS: Record<string, string> = {
@@ -79,12 +84,16 @@ export default function RecoveryPlanScreen() {
   const handleComplete = async (taskId: number) => {
     setCompleting(taskId);
     try {
-      await recoveryAPI.completeTask(taskId);
+      const res = await recoveryAPI.completeTask(taskId);
+      setTasks((prev) => prev.map((task) => (task.id === taskId ? res.data : task)));
       showAlert('完成', '任务已完成，继续加油！');
       fetchData();
     } catch (err: any) {
-      const msg = err.response?.data?.detail || '操作失败';
-      showAlert('错误', msg);
+      const detail = err.response?.data?.detail;
+      if (detail === 'Already completed.' || detail === '任务已完成。') {
+        fetchData();
+      }
+      showAlert('错误', getRecoveryErrorMessage(detail));
     } finally {
       setCompleting(null);
     }

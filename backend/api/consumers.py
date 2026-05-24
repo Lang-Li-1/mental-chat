@@ -12,23 +12,6 @@ logger = logging.getLogger(__name__)
 User = get_user_model()
 
 
-class CrisisAlertConsumer(AsyncWebsocketConsumer):
-    """WebSocket consumer for real-time crisis alert notifications."""
-
-    GROUP_NAME = "crisis_alerts"
-
-    async def connect(self):
-        await self.channel_layer.group_add(self.GROUP_NAME, self.channel_name)
-        await self.accept()
-
-    async def disconnect(self, close_code):
-        await self.channel_layer.group_discard(self.GROUP_NAME, self.channel_name)
-
-    async def crisis_alert(self, event):
-        """Handle crisis_alert message from channel layer."""
-        await self.send(text_data=json.dumps(event["data"]))
-
-
 # ── JWT auth helpers ───────────────────────────────────────────────────────
 
 @database_sync_to_async
@@ -42,6 +25,30 @@ def _user_from_token(token: str):
         return User.objects.get(id=access["user_id"])
     except Exception:
         return None
+
+
+class CrisisAlertConsumer(AsyncWebsocketConsumer):
+    """WebSocket consumer for real-time crisis alert notifications."""
+
+    GROUP_NAME = "crisis_alerts"
+
+    async def connect(self):
+        qs = parse_qs(self.scope.get("query_string", b"").decode("utf-8"))
+        token = (qs.get("token") or [""])[0]
+        user = await _user_from_token(token)
+        if user is None or user.role not in ("admin", "professional"):
+            await self.close(code=4401)
+            return
+
+        await self.channel_layer.group_add(self.GROUP_NAME, self.channel_name)
+        await self.accept()
+
+    async def disconnect(self, close_code):
+        await self.channel_layer.group_discard(self.GROUP_NAME, self.channel_name)
+
+    async def crisis_alert(self, event):
+        """Handle crisis_alert message from channel layer."""
+        await self.send(text_data=json.dumps(event["data"]))
 
 
 @database_sync_to_async
